@@ -425,6 +425,7 @@ static void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 			       opts->mss);
 	}
 
+    /* 写入SACK_Permitted选项内容 */
 	if (likely(OPTION_TS & options)) {
 		if (unlikely(OPTION_SACK_ADVERTISE & options)) {
 			*ptr++ = htonl((TCPOPT_SACK_PERM << 24) |

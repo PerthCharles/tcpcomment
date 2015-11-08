@@ -919,6 +919,7 @@ static void tcp_skb_mark_lost_uncond_verify(struct tcp_sock *tp,
  * the exact amount is rather hard to quantify. However, tp->max_window can
  * be used as an exaggerated estimate.
  */
+/* 这个函数里面的判断都很好理解，但是真要无bug写出这些判断及顺序也非常不简单 */
 static bool tcp_is_sackblock_valid(struct tcp_sock *tp, bool is_dsack,
 				   u32 start_seq, u32 end_seq)
 {
@@ -927,6 +928,8 @@ static bool tcp_is_sackblock_valid(struct tcp_sock *tp, bool is_dsack,
 		return false;
 
 	/* Nasty start_seq wrap-around check (see comments above) */
+    /* 如果起始序号 > snd_nxt，则判定为无效
+     * 尽管seq-wrap可能导致这种情况，目前的kernel选在宁可错杀(不要这个SACK信息)的保守方法*/
 	if (!before(start_seq, tp->snd_nxt))
 		return false;
 
@@ -1116,6 +1119,7 @@ static int tcp_match_skb_to_sack(struct sock *sk, struct sk_buff *skb,
 }
 
 /* Mark the given newly-SACKed range as such, adjusting counters and hints. */
+/* 给重传队列中的SKB打上SACK标记 */
 static u8 tcp_sacktag_one(struct sock *sk,
 			  struct tcp_sacktag_state *state, u8 sacked,
 			  u32 start_seq, u32 end_seq,
@@ -1167,6 +1171,7 @@ static u8 tcp_sacktag_one(struct sock *sk,
 			}
 		}
 
+        /* 为一个新的SACK block打上标记，并更新sacked_out值 */
 		sacked |= TCPCB_SACKED_ACKED;
 		state->flag |= FLAG_DATA_SACKED;
 		tp->sacked_out += pcount;
@@ -1484,6 +1489,7 @@ static struct sk_buff *tcp_sacktag_walk(struct sk_buff *skb, struct sock *sk,
 		if (unlikely(in_sack < 0))
 			break;
 
+        /* 如果判断这个SKB在一个SACK block内，则打上标记 */
 		if (in_sack) {
 			TCP_SKB_CB(skb)->sacked =
 				tcp_sacktag_one(sk,
@@ -1547,27 +1553,35 @@ static int tcp_sack_cache_ok(const struct tcp_sock *tp, const struct tcp_sack_bl
 	return cache < tp->recv_sack_cache + ARRAY_SIZE(tp->recv_sack_cache);
 }
 
+/* 该函数负责详细的解析ACK包中的SACK option */
 static int
 tcp_sacktag_write_queue(struct sock *sk, const struct sk_buff *ack_skb,
 			u32 prior_snd_una)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
+    /* 这里利用到了sacked选项在被解析时设置的偏移量，找到包头的SACK option内容 */
 	const unsigned char *ptr = (skb_transport_header(ack_skb) +
-				    TCP_SKB_CB(ack_skb)->sacked);
+				    TCP_SKB_CB(ack_skb)->sacked);   
+    /* tcp_sack_block_wire 和tcp_sack_block 结构体都是RFC中的一个SACK block
+     * 区别在于：
+     * wire 表示ACK包中的网络字节序内容，没有wire的表示本机字节序内容
+     */
 	struct tcp_sack_block_wire *sp_wire = (struct tcp_sack_block_wire *)(ptr+2);
 	struct tcp_sack_block sp[TCP_NUM_SACKS];
 	struct tcp_sack_block *cache;
 	struct tcp_sacktag_state state;
 	struct sk_buff *skb;
-	int num_sacks = min(TCP_NUM_SACKS, (ptr[1] - TCPOLEN_SACK_BASE) >> 3);
+    /* 计算SACK block的个数*/
+	int num_sacks = min(TCP_NUM_SACKS, (ptr[1] - TCPOLEN_SACK_BASE) >> 3);  
 	int used_sacks;
 	bool found_dup_sack = false;
 	int i, j;
 	int first_sack_index;
 
-	state.flag = 0;
+	state.flag = 0; /* 该变量为函数返回值，初始化为0 */
 	state.reord = tp->packets_out;
 
+    /* (一个窗口内)如果之前没收到SACK，则要 TODO 理解highest_sack含义 */
 	if (!tp->sacked_out) {
 		if (WARN_ON(tp->fackets_out))
 			tp->fackets_out = 0;
@@ -1591,12 +1605,15 @@ tcp_sacktag_write_queue(struct sock *sk, const struct sk_buff *ack_skb,
 
 	used_sacks = 0;
 	first_sack_index = 0;
+    /* for循环的目的就是对ACK包中的SACK信息进行细致的判断，只保存有效的到sp数组中 */
 	for (i = 0; i < num_sacks; i++) {
 		bool dup_sack = !i && found_dup_sack;
 
+        /* 将网络字节序转换为本机字节序 */
 		sp[used_sacks].start_seq = get_unaligned_be32(&sp_wire[i].start_seq);
 		sp[used_sacks].end_seq = get_unaligned_be32(&sp_wire[i].end_seq);
 
+        /* 判断sack block是否有效，无效返回false */
 		if (!tcp_is_sackblock_valid(tp, dup_sack,
 					    sp[used_sacks].start_seq,
 					    sp[used_sacks].end_seq)) {
@@ -1629,12 +1646,14 @@ tcp_sacktag_write_queue(struct sock *sk, const struct sk_buff *ack_skb,
 	}
 
 	/* order SACK blocks to allow in order walk of the retrans queue */
+    /* 对sack block进行冒泡排序。要记得最多就4个block，^_^ */
 	for (i = used_sacks - 1; i > 0; i--) {
 		for (j = 0; j < i; j++) {
 			if (after(sp[j].start_seq, sp[j + 1].start_seq)) {
 				swap(sp[j], sp[j + 1]);
 
 				/* Track where the first SACK block goes to */
+                /* 第一个SACK block相对比较特殊，所以要记录好 */
 				if (j == first_sack_index)
 					first_sack_index = j + 1;
 			}
@@ -3391,6 +3410,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 
 		flag |= tcp_ack_update_window(sk, skb, ack, ack_seq);
 
+        /* 如果检测到了SACK block，则在重传队列中做好标记 */
 		if (TCP_SKB_CB(skb)->sacked)
 			flag |= tcp_sacktag_write_queue(sk, skb, prior_snd_una);
 
@@ -3540,18 +3560,24 @@ void tcp_parse_options(const struct sk_buff *skb,
 					opt_rx->rcv_tsecr = get_unaligned_be32(ptr + 4);
 				}
 				break;
-			case TCPOPT_SACK_PERM:
-				if (opsize == TCPOLEN_SACK_PERM && th->syn &&
-				    !estab && sysctl_tcp_sack) {
+			case TCPOPT_SACK_PERM:  
+                /* 解析SACK-Permitted 选项 */
+				if (opsize == TCPOLEN_SACK_PERM &&  /* 长度为2 */
+                    th->syn &&      /* 只在SYN包中解析 */
+				    !estab &&       /* 在流未建立时才解析 */
+                    sysctl_tcp_sack) {  /* 是否开启选项，默认开启 */
 					opt_rx->sack_ok = TCP_SACK_SEEN;
 					tcp_sack_reset(opt_rx);
 				}
 				break;
 
 			case TCPOPT_SACK:
+                /* 检查SACK option的正确性和合法性，并设置sacked标记 */
 				if ((opsize >= (TCPOLEN_SACK_BASE + TCPOLEN_SACK_PERBLOCK)) &&
 				   !((opsize - TCPOLEN_SACK_BASE) % TCPOLEN_SACK_PERBLOCK) &&
 				   opt_rx->sack_ok) {
+                    /* 这里sacked被设置为了SACK option在TCP包中偏移
+                     * 为后续直接找到SACK option进行解析提供方便 */
 					TCP_SKB_CB(skb)->sacked = (ptr - 2) - (unsigned char *)th;
 				}
 				break;
