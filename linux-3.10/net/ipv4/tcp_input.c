@@ -971,6 +971,7 @@ static bool tcp_is_sackblock_valid(struct tcp_sock *tp, bool is_dsack,
  * highest SACK block). Also calculate the lowest snd_nxt among the remaining
  * retransmitted skbs to avoid some costly processing per ACKs.
  */
+/* 标记已经被丢失的重传包 */
 static void tcp_mark_lost_retrans(struct sock *sk)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
@@ -978,6 +979,7 @@ static void tcp_mark_lost_retrans(struct sock *sk)
 	struct sk_buff *skb;
 	int cnt = 0;
 	u32 new_low_seq = tp->snd_nxt;
+    /* received_upto 表示当前对端收到的序号值最大的值 */
 	u32 received_upto = tcp_highest_sack_seq(tp);
 
 	if (!tcp_is_fack(tp) || !tp->retrans_out ||
@@ -986,6 +988,7 @@ static void tcp_mark_lost_retrans(struct sock *sk)
 		return;
 
 	tcp_for_write_queue(skb, sk) {
+        /* ack_seq变量存储的是重传该skb时的snd_nxt值 */
 		u32 ack_seq = TCP_SKB_CB(skb)->ack_seq;
 
 		if (skb == tcp_send_head(sk))
@@ -1009,6 +1012,10 @@ static void tcp_mark_lost_retrans(struct sock *sk)
 		 * rather simple to implement as we could count fack_count
 		 * during the walk and do tp->fackets_out - fack_count).
 		 */
+        /* 如果对端收到的序号最大的值，已经超过了skb重传时的snx_nxt，
+         * 意味着某个在该重传包之后发送的新数据包已经被选择确认了，
+         * 由此推断该重传包已经丢失
+         */
 		if (after(received_upto, ack_seq)) {
 			TCP_SKB_CB(skb)->sacked &= ~TCPCB_SACKED_RETRANS;
 			tp->retrans_out -= tcp_skb_pcount(skb);
