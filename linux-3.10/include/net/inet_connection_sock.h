@@ -130,6 +130,8 @@ struct inet_connection_sock {
 #define ICSK_CA_PRIV_SIZE	(16 * sizeof(u32))
 };
 
+/* inet_csk_reset_xmit_timer函数负责处理的五个重传计时器，
+ * 下面这些标记用于函数区分这些timer */
 #define ICSK_TIME_RETRANS	1	/* Retransmit timer */
 #define ICSK_TIME_DACK		2	/* Delayed ack timer */
 #define ICSK_TIME_PROBE0	3	/* Zero window probe timer */
@@ -195,6 +197,7 @@ static inline void inet_csk_clear_xmit_timer(struct sock *sk, const int what)
 		sk_stop_timer(sk, &icsk->icsk_retransmit_timer);
 #endif
 	} else if (what == ICSK_TIME_DACK) {
+        /* 删除延迟确认定时器，并清理blocked和pending标志 */
 		icsk->icsk_ack.blocked = icsk->icsk_ack.pending = 0;
 #ifdef INET_CSK_CLEAR_TIMERS
 		sk_stop_timer(sk, &icsk->icsk_delack_timer);
@@ -230,8 +233,9 @@ static inline void inet_csk_reset_xmit_timer(struct sock *sk, const int what,
 		icsk->icsk_timeout = jiffies + when;
 		sk_reset_timer(sk, &icsk->icsk_retransmit_timer, icsk->icsk_timeout);
 	} else if (what == ICSK_TIME_DACK) {
-		icsk->icsk_ack.pending |= ICSK_ACK_TIMER;
-		icsk->icsk_ack.timeout = jiffies + when;
+		icsk->icsk_ack.pending |= ICSK_ACK_TIMER;   /* 标记启动延迟确认定时器 */
+		icsk->icsk_ack.timeout = jiffies + when;    /* 延迟确认定时器超时时间 */
+        /* 重设延迟确认定时器 */
 		sk_reset_timer(sk, &icsk->icsk_delack_timer, icsk->icsk_ack.timeout);
 	}
 #ifdef INET_CSK_DEBUG

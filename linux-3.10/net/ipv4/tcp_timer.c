@@ -194,6 +194,7 @@ static int tcp_write_timeout(struct sock *sk)
 	return 0;
 }
 
+/* 延迟确认的实际处理函数 */
 void tcp_delack_timer_handler(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -201,13 +202,16 @@ void tcp_delack_timer_handler(struct sock *sk)
 
 	sk_mem_reclaim_partial(sk);
 
+    /* 如果连接关闭了，或者延迟确认定时器并未启动，则直接返回 */
 	if (sk->sk_state == TCP_CLOSE || !(icsk->icsk_ack.pending & ICSK_ACK_TIMER))
 		goto out;
 
+    /* 如果还没有到超时时刻，则重设定时器继续计时 */
 	if (time_after(icsk->icsk_ack.timeout, jiffies)) {
 		sk_reset_timer(sk, &icsk->icsk_delack_timer, icsk->icsk_ack.timeout);
 		goto out;
 	}
+    /* 去除延迟定时器启动标志 */
 	icsk->icsk_ack.pending &= ~ICSK_ACK_TIMER;
 
 	if (!skb_queue_empty(&tp->ucopy.prequeue)) {
@@ -221,7 +225,13 @@ void tcp_delack_timer_handler(struct sock *sk)
 		tp->ucopy.memory = 0;
 	}
 
+    /* 如果需要发送的被delay的ACK */
 	if (inet_csk_ack_scheduled(sk)) {
+        /* pingpong变量为1，则表示session是交互式的，也就是数据有来有往
+         * 那么既然发生了延迟确认定时器超时，就说明不再是交互式的。
+         * 将pingpong设置为0是必须的*/
+
+        /* 如果pingpong已经被设置为零了，还发生了超时，则采用指数回避策略了 */
 		if (!icsk->icsk_ack.pingpong) {
 			/* Delayed ACK missed: inflate ATO. */
 			icsk->icsk_ack.ato = min(icsk->icsk_ack.ato << 1, icsk->icsk_rto);
@@ -232,6 +242,10 @@ void tcp_delack_timer_handler(struct sock *sk)
 			icsk->icsk_ack.pingpong = 0;
 			icsk->icsk_ack.ato      = TCP_ATO_MIN;
 		}
+
+        /* 立即发送一个delayed ACK
+         * 如果分配skb失败，则无法发送ACK，也会再次启动延迟确认定时器
+         * 这种情况就可能导致pingpong已经设置为0的情况下，还发生超时 */
 		tcp_send_ack(sk);
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_DELAYEDACKS);
 	}
@@ -241,16 +255,26 @@ out:
 		sk_mem_reclaim(sk);
 }
 
+/* 延迟确认定时器的处理函数
+ * 如果local在icsk->icsk_ack.timeout时间内都没有要跟着这个被delay的ACK
+ * 一块发出去的数据，那么延迟确认定时器就会超时。进而调用这个处理函数
+ * 来发送一个纯粹的ACK包
+ */
 static void tcp_delack_timer(unsigned long data)
 {
 	struct sock *sk = (struct sock *)data;
 
 	bh_lock_sock(sk);
 	if (!sock_owned_by_user(sk)) {
+        /* 如果此时socket没有被user占用，则调用实际的处理函数 */
 		tcp_delack_timer_handler(sk);
 	} else {
+        /* 如果此时socket被user占用，则将blocked置为1 */
 		inet_csk(sk)->icsk_ack.blocked = 1;
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_DELAYEDACKLOCKED);
+        /* 然后通过设置标记，把工作委托给tcp_release_cb()函数
+         * 调用流程为: release_sock() -> tcp_release_cb()
+         */
 		/* deleguate our work to tcp_release_cb() */
 		if (!test_and_set_bit(TCP_DELACK_TIMER_DEFERRED, &tcp_sk(sk)->tsq_flags))
 			sock_hold(sk);
@@ -642,6 +666,7 @@ out:
 
 void tcp_init_xmit_timers(struct sock *sk)
 {
+    /* 设置延迟确认定时器的处理函数为tcp_delack_timer */
 	inet_csk_init_xmit_timers(sk, &tcp_write_timer, &tcp_delack_timer,
 				  &tcp_keepalive_timer);
 }

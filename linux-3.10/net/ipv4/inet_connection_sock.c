@@ -367,6 +367,7 @@ EXPORT_SYMBOL(inet_csk_accept);
  * We may wish use just one timer maintaining a list of expire jiffies
  * to optimize.
  */
+/* 在该函数中设置各个具体重传定时器的处理函数 */
 void inet_csk_init_xmit_timers(struct sock *sk,
 			       void (*retransmit_handler)(unsigned long),
 			       void (*delack_handler)(unsigned long),

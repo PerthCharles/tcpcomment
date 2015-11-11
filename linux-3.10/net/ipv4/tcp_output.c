@@ -165,11 +165,13 @@ static void tcp_event_data_sent(struct tcp_sock *tp,
 	    (!tp->packets_out && (s32)(now - tp->lsndtime) > icsk->icsk_rto))
 		tcp_cwnd_restart(sk, __sk_dst_get(sk));
 
-	tp->lsndtime = now;
+	tp->lsndtime = now;     /* 更新最近一次发送数据的时间 */
 
 	/* If it is a reply for ato after last received
 	 * packet, enter pingpong mode.
 	 */
+    /* 如果这次发送数据距离上次收到数据的间隔在ato(Ack TimeOut)时间内，
+     * 则进入pingpong模式，即interactive数据有来有往的情况 */
 	if ((u32)(now - icsk->icsk_ack.lrcvtime) < icsk->icsk_ack.ato)
 		icsk->icsk_ack.pingpong = 1;
 }
@@ -177,7 +179,9 @@ static void tcp_event_data_sent(struct tcp_sock *tp,
 /* Account for an ACK we sent. */
 static inline void tcp_event_ack_sent(struct sock *sk, unsigned int pkts)
 {
+    /* 发出了pkts个ack包，就减小pkts个需要被快速确认的ACK个数 */
 	tcp_dec_quickack_mode(sk, pkts);
+    /* 当发送出一个ACK后，就清楚延迟确认定时器 */
 	inet_csk_clear_xmit_timer(sk, ICSK_TIME_DACK);
 }
 
@@ -2976,13 +2980,17 @@ void tcp_send_delayed_ack(struct sock *sk)
 	int ato = icsk->icsk_ack.ato;
 	unsigned long timeout;
 
+    /* 这一段的目的就是通过各种手段来降低ato的值，避免ato过大
+     * ato过大的可能原因之一就是执行过inflate ATO相关代码 */
 	if (ato > TCP_DELACK_MIN) {
 		const struct tcp_sock *tp = tcp_sk(sk);
-		int max_ato = HZ / 2;
+		int max_ato = HZ / 2;   /* 500ms */
 
+        /* 如果处于pingpong状态(数据有来有往), 
+         * 或者设置了ICSK_ACK_PUSHED标志的话 */
 		if (icsk->icsk_ack.pingpong ||
 		    (icsk->icsk_ack.pending & ICSK_ACK_PUSHED))
-			max_ato = TCP_DELACK_MAX;
+			max_ato = TCP_DELACK_MAX;   /* 200ms */
 
 		/* Slow path, intersegment interval is "high". */
 
@@ -3001,7 +3009,7 @@ void tcp_send_delayed_ack(struct sock *sk)
 	}
 
 	/* Stay within the limit we were given */
-	timeout = jiffies + ato;
+	timeout = jiffies + ato;    /* 延迟确认定时器的超时时刻 */
 
 	/* Use new timeout only if there wasn't a older one earlier. */
 	if (icsk->icsk_ack.pending & ICSK_ACK_TIMER) {
@@ -3014,9 +3022,11 @@ void tcp_send_delayed_ack(struct sock *sk)
 			return;
 		}
 
+        /* 如果timeout值比之前设置的timeout值还小，则用之前的timeout */
 		if (!time_before(timeout, icsk->icsk_ack.timeout))
 			timeout = icsk->icsk_ack.timeout;
 	}
+    /* 设置ACK需要发送标志、定时器启动标志 */
 	icsk->icsk_ack.pending |= ICSK_ACK_SCHED | ICSK_ACK_TIMER;
 	icsk->icsk_ack.timeout = timeout;
 	sk_reset_timer(sk, &icsk->icsk_delack_timer, timeout);
@@ -3037,7 +3047,9 @@ void tcp_send_ack(struct sock *sk)
 	 */
 	buff = alloc_skb(MAX_TCP_HEADER, sk_gfp_atomic(sk, GFP_ATOMIC));
 	if (buff == NULL) {
+        /* skb结构无法分配成功，则首先标记有一个要发送的ACK在等待schedule */
 		inet_csk_schedule_ack(sk);
+        /* 接着启动延迟确认计时器, 此时超时时间为TCP_DELACK_MAX(200ms) */
 		inet_csk(sk)->icsk_ack.ato = TCP_ATO_MIN;
 		inet_csk_reset_xmit_timer(sk, ICSK_TIME_DACK,
 					  TCP_DELACK_MAX, TCP_RTO_MAX);

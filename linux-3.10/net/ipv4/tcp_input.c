@@ -192,7 +192,6 @@ static void tcp_enter_quickack_mode(struct sock *sk)
 /* Send ACKs quickly, if "quick" count is not exhausted
  * and the session is not interactive.
  */
-
 static inline bool tcp_in_quickack_mode(const struct sock *sk)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
@@ -587,6 +586,9 @@ static void tcp_event_data_recv(struct sock *sk, struct sk_buff *skb)
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	u32 now;
 
+    /* 收到一个数据包，理论上应该发送一个ACK。
+     * 这里仅schedule，真正是否发送是有__tcp_ack_snd_check()来判断的
+     */
 	inet_csk_schedule_ack(sk);
 
 	tcp_measure_rcv_mss(sk, skb);
@@ -602,6 +604,7 @@ static void tcp_event_data_recv(struct sock *sk, struct sk_buff *skb)
 		tcp_incr_quickack(sk);
 		icsk->icsk_ack.ato = TCP_ATO_MIN;
 	} else {
+        /* 更新ATO值，分三种情况讨论 */
 		int m = now - icsk->icsk_ack.lrcvtime;
 
 		if (m <= TCP_ATO_MIN / 2) {
@@ -4778,6 +4781,12 @@ static inline void tcp_data_snd_check(struct sock *sk)
 /*
  * Check if sending an ack is needed.
  */
+/* 在收到对端的数据后，判断是否需要发送ACK 
+ * 满足以下条件之一时，立即发送一个ACK
+ *  a. 收到超过一个MSS的数据 并且 XXX
+ *  b. 有需要快速被发送的ACK等待发送
+ *  c. 有乱序发生时
+ * 否则发送一个delayedack */
 static void __tcp_ack_snd_check(struct sock *sk, int ofo_possible)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
