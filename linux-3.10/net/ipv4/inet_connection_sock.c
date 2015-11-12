@@ -537,6 +537,7 @@ extern int sysctl_tcp_synack_retries;
 
 
 /* Decide when to expire the request and when to resend SYN-ACK */
+/* 这里决定request是否过期，也是用num_timeout判断，而不是num_retrans判断 */
 static inline void syn_ack_recalc(struct request_sock *req, const int thresh,
 				  const int max_retries,
 				  const u8 rskq_defer_accept,
@@ -562,6 +563,7 @@ int inet_rtx_syn_ack(struct sock *parent, struct request_sock *req)
 {
 	int err = req->rsk_ops->rtx_syn_ack(parent, req);
 
+    /* req->num_retrans记录的是synack包的重传次数 */
 	if (!err)
 		req->num_retrans++;
 	return err;
@@ -639,6 +641,7 @@ void inet_csk_reqsk_queue_prune(struct sock *parent,
 						lopt->qlen_young--;
 					timeo = min(timeout << req->num_timeout,
 						    max_rto);
+                    /* 设置expires值使用num_timeout进行指数回避，而不是num_retrans */
 					req->expires = now + timeo;
 					reqp = &req->dl_next;
 					continue;

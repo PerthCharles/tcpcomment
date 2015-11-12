@@ -556,6 +556,7 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 		 * the idea of fast retransmit in recovery.
 		 */
 		if (!inet_rtx_syn_ack(sk, req))
+            /* req->num_timeout 记录的是synack包超时重传的次数 */
 			req->expires = min(TCP_TIMEOUT_INIT << req->num_timeout,
 					   TCP_RTO_MAX) + jiffies;
 		return NULL;
