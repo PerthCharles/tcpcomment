@@ -3902,9 +3902,12 @@ static void tcp_dsack_set(struct sock *sk, u32 seq, u32 end_seq)
 	if (tcp_is_sack(tp) && sysctl_tcp_dsack) {
 		int mib_idx;
 
+        /* 如果发送的dsack序号小于rcv_nxt，说明这是一个已经
+         * 按序收到的数据包的重复包，进而增加oldsent计数器 */
 		if (before(seq, tp->rcv_nxt))
 			mib_idx = LINUX_MIB_TCPDSACKOLDSENT;
 		else
+            /* 反之增加ofosent计数器，即out of order */
 			mib_idx = LINUX_MIB_TCPDSACKOFOSENT;
 
 		NET_INC_STATS_BH(sock_net(sk), mib_idx);
