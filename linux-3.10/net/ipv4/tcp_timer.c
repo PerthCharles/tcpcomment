@@ -217,6 +217,8 @@ void tcp_delack_timer_handler(struct sock *sk)
 	if (!skb_queue_empty(&tp->ucopy.prequeue)) {
 		struct sk_buff *skb;
 
+        /* 将数据加入prequeue，本来是期待着userspace尽快处理。其中仍有数据，
+         * 可能隐含着userspace行文不佳 */
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPSCHEDULERFAILED);
 
 		while ((skb = __skb_dequeue(&tp->ucopy.prequeue)) != NULL)
