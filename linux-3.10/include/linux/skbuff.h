@@ -2678,6 +2678,7 @@ static inline int skb_csum_unnecessary(const struct sk_buff *skb)
  */
 static inline __sum16 skb_checksum_complete(struct sk_buff *skb)
 {
+    /* 如果硬件已经检查过skb的checksum，则直接返回0(表示checksum正确) */
 	return skb_csum_unnecessary(skb) ?
 	       0 : __skb_checksum_complete(skb);
 }

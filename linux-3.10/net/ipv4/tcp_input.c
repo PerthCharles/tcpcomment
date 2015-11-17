@@ -5184,7 +5184,7 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 				goto slow_path;
 
 			/* If PAWS failed, check it more carefully in slow path */
-            /* 使用timestamp的PAWS机制，TODO: ts_recent具体是怎么设置的？ */
+            /* 使用timestamp的PAWS机制，TODO: ts_recent具体是怎么设置的？, 内在含义是什么？ */
 			if ((s32)(tp->rx_opt.rcv_tsval - tp->rx_opt.ts_recent) < 0)
 				goto slow_path;
 
@@ -5223,6 +5223,7 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 				goto discard;       /* discard的处理动作就是释放skb所占内存 */
 			}
 		} else {
+            /* 进入此else，说明该ACK包还带有数据 */
 			int eaten = 0;
 			int copied_early = 0;
 			bool fragstolen = false;
@@ -5249,9 +5250,7 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 					 * seq == rcv_nxt and rcv_wup <= rcv_nxt.
 					 * Hence, check seq<=rcv_wup reduces to:
 					 */
-					if (tcp_header_len ==
-					    (sizeof(struct tcphdr) +
-					     TCPOLEN_TSTAMP_ALIGNED) &&
+					if (tcp_header_len == (sizeof(struct tcphdr) + TCPOLEN_TSTAMP_ALIGNED) &&
 					    tp->rcv_nxt == tp->rcv_wup)
 						tcp_store_ts_recent(tp);
 
