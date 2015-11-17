@@ -3624,16 +3624,22 @@ void tcp_parse_options(const struct sk_buff *skb,
 }
 EXPORT_SYMBOL(tcp_parse_options);
 
+/* 解析一个对其了的timestamp选项，成功返回true */
 static bool tcp_parse_aligned_timestamp(struct tcp_sock *tp, const struct tcphdr *th)
 {
+    /* th指向tcp包头的起始位置，而tcphdr结构体是不包含TCP选项的。
+     * 先(th + 1)就让th指向了tcp选项部分的起始位置 */
 	const __be32 *ptr = (const __be32 *)(th + 1);
 
+    /* 如果ptr指向的内容 == 0x 0101 080a, 则这是一个对其了的timestamp option */
 	if (*ptr == htonl((TCPOPT_NOP << 24) | (TCPOPT_NOP << 16)
 			  | (TCPOPT_TIMESTAMP << 8) | TCPOLEN_TIMESTAMP)) {
-		tp->rx_opt.saw_tstamp = 1;
+		tp->rx_opt.saw_tstamp = 1;  /* 标记见到了timestamp */
 		++ptr;
-		tp->rx_opt.rcv_tsval = ntohl(*ptr);
+		tp->rx_opt.rcv_tsval = ntohl(*ptr);     /* 解析对端发过来的timestamp值 */
 		++ptr;
+        /* 解析本地发出去的timestamp值 */
+        /* TODO: tp->tsoffset 是干嘛用的？ 是RFC中提到的一个random的避免被推测出本地时间的值吗 ？ */
 		tp->rx_opt.rcv_tsecr = ntohl(*ptr) - tp->tsoffset;
 		return true;
 	}
@@ -5092,6 +5098,11 @@ discard:
 	return false;
 }
 
+/* fast path被选中,就意味着TCP流的所有的数据传输都是符合预期的。
+ * 所谓符合预期，从整体上就可以理解为：
+ *      数据包都是按序到达且没有丢包
+ * 带着这个思路去理解下面的代码，就比较好懂一些。
+ */
 /*
  *	TCP receive function for the ESTABLISHED state.
  *
@@ -5107,6 +5118,9 @@ discard:
  *	- Data is sent in both directions. Fast path only supports pure senders
  *	  or pure receivers (this means either the sequence number or the ack
  *	  value must stay constant)
+ *	    -- TODO
+ *	        疑问1：为什么要限制数据单向发送？
+ *	        疑问2：具体是如何做到限制数据单向发送的？是严格的完全单向，还是一段时间内是单向的？
  *	- Unexpected TCP option.
  *
  *	When these conditions are not satisfied it drops into a standard
@@ -5148,9 +5162,10 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 	 *	PSH flag is ignored.
 	 */
 
+    /* TODO: pred_flag含义？ tcp_flag_word()含义？ */
 	if ((tcp_flag_word(th) & TCP_HP_BITS) == tp->pred_flags &&
-	    TCP_SKB_CB(skb)->seq == tp->rcv_nxt &&
-	    !after(TCP_SKB_CB(skb)->ack_seq, tp->snd_nxt)) {
+	    TCP_SKB_CB(skb)->seq == tp->rcv_nxt &&                  /* skb的序号刚好就是期望收到的序号 */
+	    !after(TCP_SKB_CB(skb)->ack_seq, tp->snd_nxt)) {        /* skb的尾序号不超过snd_nxt，算是合法性检测 */
 		int tcp_header_len = tp->tcp_header_len;
 
 		/* Timestamp header prediction: tcp_header_len
@@ -5159,12 +5174,17 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 		 */
 
 		/* Check timestamp */
+        /* 如果刚好仅使用了timestamp选项, 因为在"TCP正常包传输"过程中，TCP包仅
+         * 可能包括timestamp选项。SACK_PERMITTED，WIN_SACLE都只能在三次握手时使用 */
 		if (tcp_header_len == sizeof(struct tcphdr) + TCPOLEN_TSTAMP_ALIGNED) {
 			/* No? Slow path! */
+            /* 如果解析失败，则说明带了选项，又不是一个正常的timestamp选项。
+             * 则可能出了问题，进而进入slow_path */
 			if (!tcp_parse_aligned_timestamp(tp, th))
 				goto slow_path;
 
 			/* If PAWS failed, check it more carefully in slow path */
+            /* 使用timestamp的PAWS机制，TODO: ts_recent具体是怎么设置的？ */
 			if ((s32)(tp->rx_opt.rcv_tsval - tp->rx_opt.ts_recent) < 0)
 				goto slow_path;
 
@@ -5177,26 +5197,30 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 
 		if (len <= tcp_header_len) {
 			/* Bulk data transfer: sender */
+            /* 如果收到的是一个不带数据的ACK包，则本地应该是一个数据发送方，对端是一个数据接收方 */
 			if (len == tcp_header_len) {
 				/* Predicted packet is in window by definition.
 				 * seq == rcv_nxt and rcv_wup <= rcv_nxt.
 				 * Hence, check seq<=rcv_wup reduces to:
 				 */
-				if (tcp_header_len ==
-				    (sizeof(struct tcphdr) + TCPOLEN_TSTAMP_ALIGNED) &&
-				    tp->rcv_nxt == tp->rcv_wup)
-					tcp_store_ts_recent(tp);
+				if (tcp_header_len == (sizeof(struct tcphdr) + TCPOLEN_TSTAMP_ALIGNED) &&   /* 如果有且仅有timestamp */
+                    /* 如果对端是一个数据接收方，那么rcv_nxt是不会变化的
+                     * rcv_wup是上次本地发送变化过的rwnd到对端时，记录的rcv_nxt */
+				    tp->rcv_nxt == tp->rcv_wup)     
+                    /* 至此，已经判断出这个一个按序(序号和timestap)到达的纯ACK包，并且本地是数据发送方，对端是数据接收方 */
+					tcp_store_ts_recent(tp);    /* 可以放心的更新ts_recent值了,至于为什么放心，看下面一条源码注释 */
 
 				/* We know that such packets are checksummed
 				 * on entry.
 				 */
-				tcp_ack(sk, skb, 0);
-				__kfree_skb(skb);
-				tcp_data_snd_check(sk);
+				tcp_ack(sk, skb, 0);    /* 调用tcp_ack()处理收到的ACK包，flag置为0 */
+				__kfree_skb(skb);       /* 将收到的纯ACK对应的skb释放掉 */
+				tcp_data_snd_check(sk); /* 将pending在sndbuf中的数据发送出去，如果有需要的话还会增大sndbuf的大小 */
 				return 0;
 			} else { /* Header too small */
+                /* 如果实际的包大小，比tp->doff * 4计算的小，则是一个不正确的TCP包，丢弃并增加计数器 */
 				TCP_INC_STATS_BH(sock_net(sk), TCP_MIB_INERRS);
-				goto discard;
+				goto discard;       /* discard的处理动作就是释放skb所占内存 */
 			}
 		} else {
 			int eaten = 0;
