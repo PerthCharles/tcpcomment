@@ -362,7 +362,6 @@ static void tcp_fastopen_synack_timer(struct sock *sk)
 /*
  *	The TCP retransmit timer.
  */
-
 void tcp_retransmit_timer(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -377,12 +376,14 @@ void tcp_retransmit_timer(struct sock *sk)
 		 */
 		return;
 	}
+
+    /* 如果没有数据包在网络中，则直接退出 */
 	if (!tp->packets_out)
 		goto out;
 
 	WARN_ON(tcp_write_queue_empty(sk));
 
-	tp->tlp_high_seq = 0;
+	tp->tlp_high_seq = 0;   /* TLP失败了，将TLP对应的标记清零 */
 
 	if (!tp->snd_wnd && !sock_flag(sk, SOCK_DEAD) &&
 	    !((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV))) {
@@ -407,19 +408,23 @@ void tcp_retransmit_timer(struct sock *sk)
 				       tp->snd_una, tp->snd_nxt);
 		}
 #endif
+        /* 如果TCP_RTO_MAX时间内还未收到任何ACK，则调用tcp_write_err()->tcp_done()关闭socket */
 		if (tcp_time_stamp - tp->rcv_tstamp > TCP_RTO_MAX) {
 			tcp_write_err(sk);
 			goto out;
 		}
-		tcp_enter_loss(sk, 0);
+		tcp_enter_loss(sk, 0);  /* 进入TCP_CA_Loss阶段 */
+        /* 重传队首的一个skb */
 		tcp_retransmit_skb(sk, tcp_write_queue_head(sk));
 		__sk_dst_reset(sk);
 		goto out_reset_timer;
 	}
 
+    /* 如果已经尝试重传了够长时间还没用，则是时候放弃了 */
 	if (tcp_write_timeout(sk))
 		goto out;
 
+    /* 如果是第一次RTO重传，则根据情况来调整计数器 */
 	if (icsk->icsk_retransmits == 0) {
 		int mib_idx;
 
@@ -442,6 +447,7 @@ void tcp_retransmit_timer(struct sock *sk)
 		NET_INC_STATS_BH(sock_net(sk), mib_idx);
 	}
 
+    /* 正常方式进入重传状态, 不正常方式指的是前面发现对端shrunk receive window的情况 */
 	tcp_enter_loss(sk, 0);
 
 	if (tcp_retransmit_skb(sk, tcp_write_queue_head(sk)) > 0) {
@@ -506,25 +512,30 @@ void tcp_write_timer_handler(struct sock *sk)
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	int event;
 
+    /* 如果socket已经关闭，或者没有启用定时器，则直接返回 */
 	if (sk->sk_state == TCP_CLOSE || !icsk->icsk_pending)
 		goto out;
 
+    /* 如果还没有到超时时刻，则重设定时器继续计时 */
 	if (time_after(icsk->icsk_timeout, jiffies)) {
 		sk_reset_timer(sk, &icsk->icsk_retransmit_timer, icsk->icsk_timeout);
 		goto out;
 	}
 
+    /* 可以看出，重传定时器使用icsk->icsk_pending这个变量来进一步区分具体的重传定时器 */
 	event = icsk->icsk_pending;
 
 	switch (event) {
 	case ICSK_TIME_EARLY_RETRANS:
 		tcp_resume_early_retransmit(sk);
 		break;
-	case ICSK_TIME_LOSS_PROBE:
+	case ICSK_TIME_LOSS_PROBE:          
+        /* 如果是Probe Timeout 定时器超时，则发送一个Tail Loss Probe(TLP)包 */
 		tcp_send_loss_probe(sk);
 		break;
 	case ICSK_TIME_RETRANS:
 		icsk->icsk_pending = 0;
+        /* 如果是RTO定时器超时，则进入LOSS状态 */
 		tcp_retransmit_timer(sk);
 		break;
 	case ICSK_TIME_PROBE0:
@@ -543,6 +554,7 @@ static void tcp_write_timer(unsigned long data)
 
 	bh_lock_sock(sk);
 	if (!sock_owned_by_user(sk)) {
+        /* 如果此时socket没有被user占用，则调用实际的处理函数 */
 		tcp_write_timer_handler(sk);
 	} else {
 		/* deleguate our work to tcp_release_cb() */
@@ -666,9 +678,12 @@ out:
 	sock_put(sk);
 }
 
+/* 初始化TCP的三大定时器 */
 void tcp_init_xmit_timers(struct sock *sk)
 {
+    /* 设置重传定时器的处理函数为tcp_write_timer */
     /* 设置延迟确认定时器的处理函数为tcp_delack_timer */
+    /* 设置保活定时器的处理函数为tcp_keepalive_timer */
 	inet_csk_init_xmit_timers(sk, &tcp_write_timer, &tcp_delack_timer,
 				  &tcp_keepalive_timer);
 }

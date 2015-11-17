@@ -219,6 +219,7 @@ static inline void inet_csk_reset_xmit_timer(struct sock *sk, const int what,
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
 
+    /* timer的超时时间一般都有最大值限制的 */
 	if (when > max_when) {
 #ifdef INET_CSK_DEBUG
 		pr_debug("reset_xmit_timer: sk=%p %d when=0x%lx, caller=%p\n",

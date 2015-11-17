@@ -384,6 +384,7 @@ void inet_csk_init_xmit_timers(struct sock *sk,
 }
 EXPORT_SYMBOL(inet_csk_init_xmit_timers);
 
+/* 关闭定时器 */
 void inet_csk_clear_xmit_timers(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);

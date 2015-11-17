@@ -3317,6 +3317,7 @@ EXPORT_SYMBOL(tcp_md5_hash_key);
 
 #endif
 
+/* 关闭一个socket，该函数负责一些扫尾工作 */
 void tcp_done(struct sock *sk)
 {
 	struct request_sock *req = tcp_sk(sk)->fastopen_rsk;
@@ -3324,8 +3325,8 @@ void tcp_done(struct sock *sk)
 	if (sk->sk_state == TCP_SYN_SENT || sk->sk_state == TCP_SYN_RECV)
 		TCP_INC_STATS_BH(sock_net(sk), TCP_MIB_ATTEMPTFAILS);
 
-	tcp_set_state(sk, TCP_CLOSE);
-	tcp_clear_xmit_timers(sk);
+	tcp_set_state(sk, TCP_CLOSE);   /* 改变socket状态为TCP_CLOSE */
+	tcp_clear_xmit_timers(sk);      /* 关闭定时器 */
 	if (req != NULL)
 		reqsk_fastopen_remove(sk, req, false);
 

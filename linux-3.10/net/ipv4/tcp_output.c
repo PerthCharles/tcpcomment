@@ -1984,16 +1984,21 @@ void tcp_send_loss_probe(struct sock *sk)
 	int mss = tcp_current_mss(sk);
 	int err = -1;
 
+    /* 如果有新数据可以发送，则发送新数据进行loss probe */
+    /* TLP用push_one参数=2这个trick来区分是正常的发送包，
+     * 还是loss probe */
 	if (tcp_send_head(sk) != NULL) {
 		err = tcp_write_xmit(sk, mss, TCP_NAGLE_OFF, 2, GFP_ATOMIC);
-		goto rearm_timer;
+		goto rearm_timer;       /* 重新启动RTO超时定时器 */
 	}
 
 	/* At most one outstanding TLP retransmission. */
+    /* tlp_high_seq被设置过，说明已经发送了一个TLP包 */
 	if (tp->tlp_high_seq)
 		goto rearm_timer;
 
 	/* Retransmit last segment. */
+    /* 没新数据需要发送时，就发送队尾的skb */
 	skb = tcp_write_queue_tail(sk);
 	if (WARN_ON(!skb))
 		goto rearm_timer;
@@ -2020,11 +2025,13 @@ void tcp_send_loss_probe(struct sock *sk)
 		tp->tlp_high_seq = tp->snd_nxt;
 
 rearm_timer:
+    /* 重新安装RTO超时计时器 */
 	inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS,
 				  inet_csk(sk)->icsk_rto,
 				  TCP_RTO_MAX);
 
 	if (likely(!err))
+        /* 增加发送loss probe的次数，在/proc/net/snmp中可看到 */
 		NET_INC_STATS_BH(sock_net(sk),
 				 LINUX_MIB_TCPLOSSPROBES);
 	return;
