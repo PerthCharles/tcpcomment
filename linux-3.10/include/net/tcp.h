@@ -881,6 +881,8 @@ static inline void tcp_disable_early_retrans(struct tcp_sock *tp)
 	tp->do_early_retrans = 0;
 }
 
+/* 计算离开网络，且未被按序确认的数据包个数
+ * 包括被SACK的包，和被"推测"为已经被网络丢弃的包 */
 static inline unsigned int tcp_left_out(const struct tcp_sock *tp)
 {
 	return tp->sacked_out + tp->lost_out;
@@ -988,6 +990,7 @@ static inline void tcp_init_wl(struct tcp_sock *tp, u32 seq)
 	tp->snd_wl1 = seq;
 }
 
+/* 记录导致发送窗口被更新的ACK包序号 */
 static inline void tcp_update_wl(struct tcp_sock *tp, u32 seq)
 {
 	tp->snd_wl1 = seq;

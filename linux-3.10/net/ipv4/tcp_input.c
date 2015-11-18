@@ -3261,12 +3261,17 @@ static inline bool tcp_may_raise_cwnd(const struct sock *sk, const int flag)
 /* Check that window update is acceptable.
  * The function assumes that snd_una<=ack<=snd_next.
  */
+/* 判断确认好ack是否更新发送窗口 */
+/* TODO: 这里的window update，到底是发送窗口更新，还是接收窗口更新？ */
 static inline bool tcp_may_update_window(const struct tcp_sock *tp,
 					const u32 ack, const u32 ack_seq,
 					const u32 nwin)
 {
-	return	after(ack, tp->snd_una) ||
-		after(ack_seq, tp->snd_wl1) ||
+	return	after(ack, tp->snd_una) ||      /* 如果ack大于snd_una，则有新数据被确认了，显然会更新发送窗口 */
+        /* 如果接收包的序号大于上一次更新发送窗口时记录的序号，则更新发送窗口 */
+        /* TODO： ack_seq在增大，说明对端在往本地发数据，为什么要更新发送窗口？ */
+		after(ack_seq, tp->snd_wl1) ||      
+        /* 如果对端没有往本地发数据，但是接收包中的receive window值变大了，则需要更新发送窗口 */
 		(ack_seq == tp->snd_wl1 && nwin > tp->snd_wnd);
 }
 
@@ -3286,9 +3291,10 @@ static int tcp_ack_update_window(struct sock *sk, const struct sk_buff *skb, u32
 	if (likely(!tcp_hdr(skb)->syn))
 		nwin <<= tp->rx_opt.snd_wscale;
 
+    /* tcp_may_update_window()负责判断是否需要更新发送窗口，返回true表示需要更新 */
 	if (tcp_may_update_window(tp, ack, ack_seq, nwin)) {
-		flag |= FLAG_WIN_UPDATE;
-		tcp_update_wl(tp, ack_seq);
+		flag |= FLAG_WIN_UPDATE;    /* 给flag打上更新发送窗口的标记 */
+		tcp_update_wl(tp, ack_seq); /* 记录导致发送窗口被更新的ACK包序号 */
 
 		if (tp->snd_wnd != nwin) {
 			tp->snd_wnd = nwin;
@@ -3300,13 +3306,13 @@ static int tcp_ack_update_window(struct sock *sk, const struct sk_buff *skb, u32
 			tcp_fast_path_check(sk);
 
 			if (nwin > tp->max_window) {
-				tp->max_window = nwin;
+				tp->max_window = nwin;  /* max_window记录都是收到过的最大接收窗口 */
 				tcp_sync_mss(sk, inet_csk(sk)->icsk_pmtu_cookie);
 			}
 		}
 	}
 
-	tp->snd_una = ack;
+	tp->snd_una = ack;  /* 更新发送窗口的一个重要标记，就是更新snd_una值 */
 
 	return flag;
 }
@@ -3410,7 +3416,8 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
      * 理解：TCP_SKB_CB(skb)中的seq是对端的seq，ack_seq是对端确认本端发过去的数据，
      * 所以本地处理这个ACK包时，需要将ack_seq解释成这个ACK包按序确认了本地的那个序号(ack) 
      * 而TCP_SKB_CB(skb)->seq是对端对这个ACK包中数据的序号，这个序号是需要本端发送给对端的确认数据
-     * 一句话总结：下面等号左边的ack_seq是对端的序号，ack是本地的序号 */
+     * 一句话总结：下面等号左边的ack_seq是对端的序号，ack是本地的序号
+     * 更新：标准的解释ack_seq是序号，ack是确认号*/
 	u32 ack_seq = TCP_SKB_CB(skb)->seq;     
 	u32 ack = TCP_SKB_CB(skb)->ack_seq;
 	bool is_dupack = false;
@@ -3468,12 +3475,16 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 		 * No more checks are required.
 		 * Note, we use the fact that SND.UNA>=SND.WL2.
 		 */
-		tcp_update_wl(tp, ack_seq);
-		tp->snd_una = ack;      /* 更新snd_una */
-		flag |= FLAG_WIN_UPDATE;
+		tcp_update_wl(tp, ack_seq); /* 记录导致发送窗口被更新的ACK包序号 */
+		tp->snd_una = ack;          /* 更新snd_una, 也可理解为发送窗口左端前移 */
+		flag |= FLAG_WIN_UPDATE;    /* 发送窗口左端前移，也就意味着发送窗口被更新 */
 
-		tcp_ca_event(sk, CA_EVENT_FAST_ACK);    /* in sequence ack, 按序到达，且确认了新数据的ACK */
+        /* in sequence ack: 按序到达，且确认了新数据的ACK 通知拥塞控制算法 */
+        /* 目前也就发现westwood算法里面关心这个拥塞事件 */
+		tcp_ca_event(sk, CA_EVENT_FAST_ACK);    
 
+        /* 至此可知，TCPHPACKS的含义是：在tcp_ack()处理逻辑中，
+         * 如果不是在慢速路径，并且这个ACK更新了发送窗口，则该计数器加1 */
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPHPACKS);
 	} else {
         /* 如果ACK包中有数据，标记FLAG_DATA, 否则增加TCPPUREACKS计数器的值 */
@@ -3482,16 +3493,19 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 		else
 			NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPPUREACKS);
 
+        /* 如果更新了发送窗口，则返回FLAG_WIN_UPDATE给flag
+         * 注意：snd_una变量会在tcp_ack_update_window()中更新!!! */
 		flag |= tcp_ack_update_window(sk, skb, ack, ack_seq);
 
-        /* 如果检测到了SACK block，则在重传队列中做好标记 */
+        /* 如果检测到了SACK block，则在重传队列中做好标记, 即更新scoreboard */
 		if (TCP_SKB_CB(skb)->sacked)
 			flag |= tcp_sacktag_write_queue(sk, skb, prior_snd_una);
 
+        /* 查看ACK是否携带ECE标志，且标示合法 */
 		if (TCP_ECN_rcv_ecn_echo(tp, tcp_hdr(skb)))
 			flag |= FLAG_ECE;
 
-		tcp_ca_event(sk, CA_EVENT_SLOW_ACK);
+		tcp_ca_event(sk, CA_EVENT_SLOW_ACK);    /* 该拥塞事件，也是只有在westwood中关心 */
 	}
 
 	/* We passed data and got it acked, remove any soft error
@@ -3500,10 +3514,15 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 	sk->sk_err_soft = 0;
 	icsk->icsk_probes_out = 0;
 	tp->rcv_tstamp = tcp_time_stamp;
+    /* 如果packets_out为0，即没有发送且未被按序确认的数据包
+     * 则进入no_queue逻辑。 TODO： no_queue内在含义是什么？ */
 	if (!prior_packets)
 		goto no_queue;
 
 	/* See if we can take anything off of the retransmit queue. */
+    /* TODO: 这个地方为什么要重新拿一次packets_out ?
+     * 目前知道tp->snd_una可能会改变，但是暂时还没找到使用改变后的snd_una去更新packets_out的代码
+     * 查找代码发现，tp->packets_out仅会在发送了数据包的情况下改变，也就是说上面某个过程中会发送数据包？ */
 	previous_packets_out = tp->packets_out;
 	flag |= tcp_clean_rtx_queue(sk, prior_fackets, prior_snd_una);
 

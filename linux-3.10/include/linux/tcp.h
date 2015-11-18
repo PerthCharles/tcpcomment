@@ -179,6 +179,7 @@ struct tcp_sock {
 #endif
 	} ucopy;
 
+    /* 记录更新发送窗口的ACK段序号 TODO: 记录这个需要有什么用途？*/
 	u32	snd_wl1;	/* Sequence for window update		*/
 	u32	snd_wnd;	/* The window we expect to receive	*/
 	u32	max_window;	/* Maximal window ever seen from peer	*/
@@ -208,7 +209,10 @@ struct tcp_sock {
 	u32	rttvar;		/* smoothed mdev_max			*/
 	u32	rtt_seq;	/* sequence number to update rttvar	*/
 
+    /* packets_out 是指发送且未被按序确认的数据包个数，等于snd_nxt - snd_una。
+     * 原有的英文注释有点误导人，要与内核中计算的pkts_inflight的概念要区分开 */
 	u32	packets_out;	/* Packets which are "in flight"	*/
+    /* 重传的，且未被(TODO: 按序?)确认的数据包个数 */
 	u32	retrans_out;	/* Retransmitted packets out		*/
 
 	u16	urg_data;	/* Saved octet of OOB data and control flags */
@@ -240,6 +244,7 @@ struct tcp_sock {
 	u32	write_seq;	/* Tail(+1) of data held in tcp send buffer */
 	u32	pushed_seq;	/* Last pushed seq, required to talk to windows */
 	u32	lost_out;	/* Lost packets			*/
+    /* 被SACKED的数据段的个数，如果SACK选项不开，则是dupack的个数 */
 	u32	sacked_out;	/* SACK'd packets			*/
 	u32	fackets_out;	/* FACK'd packets			*/
 	u32	tso_deferred;
