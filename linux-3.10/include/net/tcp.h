@@ -869,9 +869,11 @@ static inline void tcp_enable_fack(struct tcp_sock *tp)
  */
 static inline void tcp_enable_early_retrans(struct tcp_sock *tp)
 {
-	tp->do_early_retrans = sysctl_tcp_early_retrans &&
-		sysctl_tcp_early_retrans < 4 && !sysctl_tcp_thin_dupack &&
-		sysctl_tcp_reordering == 3;
+	tp->do_early_retrans =
+        sysctl_tcp_early_retrans &&         /* ER 开关是否开启 */
+		sysctl_tcp_early_retrans < 4 &&     /* ER 开关是否开启， 等于1,2,3均表示开启 */
+        !sysctl_tcp_thin_dupack &&          /* 只有关闭thin-dupack才开ER */
+		sysctl_tcp_reordering == 3;         /* 需要默认的reordering是3才开ER */
 }
 
 static inline void tcp_disable_early_retrans(struct tcp_sock *tp)

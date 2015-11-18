@@ -527,6 +527,8 @@ void tcp_write_timer_handler(struct sock *sk)
 
 	switch (event) {
 	case ICSK_TIME_EARLY_RETRANS:
+        /* early retransmit是用来解决某些特定场景下，没有足够dupack触发fast retransmit的造成的问题。 
+         * 本质是通过检测出特定场景，然后降低dupack threshold来触发fast retransmit */
 		tcp_resume_early_retransmit(sk);
 		break;
 	case ICSK_TIME_LOSS_PROBE:          

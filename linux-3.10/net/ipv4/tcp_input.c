@@ -1968,11 +1968,14 @@ static inline int tcp_fackets_out(const struct tcp_sock *tp)
  * they differ. Since neither occurs due to loss, TCP should really
  * ignore them.
  */
+/* 推测出有多少个dupack */
 static inline int tcp_dupack_heuristics(const struct tcp_sock *tp)
 {
+    /* TODO: sacked_out为什么还要加1 ？ 是因为判断返回值与reorderig大小的时候用的是>, 而不是>=吗？ */
 	return tcp_is_fack(tp) ? tp->fackets_out : tp->sacked_out + 1;
 }
 
+/* 返回true，表示需要pause一会在进入Recovery. 返回false则意味着立即进入Recovery */
 static bool tcp_pause_early_retransmit(struct sock *sk, int flag)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -1982,14 +1985,19 @@ static bool tcp_pause_early_retransmit(struct sock *sk, int flag)
 	 * max(RTT/4, 2msec) unless ack has ECE mark, no RTT samples
 	 * available, or RTO is scheduled to fire first.
 	 */
-	if (sysctl_tcp_early_retrans < 2 || sysctl_tcp_early_retrans > 3 ||
-	    (flag & FLAG_ECE) || !tp->srtt)
+	if (sysctl_tcp_early_retrans < 2 ||     /* kernel没开delay ER的功能 */
+        sysctl_tcp_early_retrans > 3 ||     /* kernel没开ER功能(这个地方与do_early_retrans的判断有重复，感觉有点多余 */
+	    (flag & FLAG_ECE) ||                /* ECN: Explict Congestion Notification ECE: ECN-Echo */
+        !tp->srtt)                          /* 没有RTT采样，没办法确定delay多久 */
 		return false;
 
 	delay = max_t(unsigned long, (tp->srtt >> 5), msecs_to_jiffies(2));
+    /* 如果RTO先超时，则立即进入Recovery */
 	if (!time_after(inet_csk(sk)->icsk_timeout, (jiffies + delay)))
 		return false;
 
+    /* 至此，就可以选择puase min(RTT/4, 2ms)在进入Recovery阶段，故设置ER超时定时器 */
+    /* ICSK_TIME_EARLY_RETRANS的超时处理函数是tcp_resume_early_retransmit() */
 	inet_csk_reset_xmit_timer(sk, ICSK_TIME_EARLY_RETRANS, delay,
 				  TCP_RTO_MAX);
 	return true;
@@ -2102,6 +2110,8 @@ static inline int tcp_head_timedout(const struct sock *sk)
  * Main question: may we further continue forward transmission
  * with the same cwnd?
  */
+/* 该函数决定是否从 open/reorder/cwr这三个状态之一转换为Recovery 状态 */
+/* 返回true，表示应该进入recovery状态 */
 static bool tcp_time_to_recover(struct sock *sk, int flag)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -2112,6 +2122,7 @@ static bool tcp_time_to_recover(struct sock *sk, int flag)
 		return true;
 
 	/* Not-A-Trick#2 : Classic rule... */
+    /* 如果dupack个数达到reordering上限，即dupack thresh，则进入recovery阶段 */
 	if (tcp_dupack_heuristics(tp) > tp->reordering)
 		return true;
 
@@ -2149,10 +2160,18 @@ static bool tcp_time_to_recover(struct sock *sk, int flag)
 	 * Mitigation A.3 in the RFC and delay the retransmission for a short
 	 * interval if appropriate.
 	 */
-	if (tp->do_early_retrans && !tp->retrans_out && tp->sacked_out &&
-	    (tp->packets_out >= (tp->sacked_out + 1) && tp->packets_out < 4) &&
-	    !tcp_may_send_now(sk))
-		return !tcp_pause_early_retransmit(sk, flag);
+    /* tp->packet_out >= (tp->sacked_out + 1) 这个地方为什么用>= ?这是Googler提出的enhanced ER机制
+     *      Propose to allow a delayed early retransmit in the case where
+     *      there are three outstanding segments that have not been cumulatively
+     *      acknowledged and one segment that has been fully SACKed
+     */
+	if (tp->do_early_retrans &&                         /* 内核参数的配置允许开启ER */
+        !tp->retrans_out &&                             /* 当前有重传数据 */
+        tp->sacked_out &&                               /* 当前收到了dupack，或SACK block */
+	    (tp->packets_out >= (tp->sacked_out + 1) &&     /* dupack个数满足ER/enhanced ER条件 */
+        tp->packets_out < 4) &&                         /* packets_out很小，即RFC中oseg < 4 */
+	    !tcp_may_send_now(sk))                          /* 没有新数据可以发送 */
+		return !tcp_pause_early_retransmit(sk, flag);   /* 判断是否等待一段时间(1/4 RTT)再出发ER */
 
 	return false;
 }
@@ -2261,19 +2280,21 @@ static void tcp_mark_head_lost(struct sock *sk, int packets, int mark_head)
 }
 
 /* Account newly detected lost packet(s) */
-
 static void tcp_update_scoreboard(struct sock *sk, int fast_rexmit)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
+    /* 如果不支持sack，则标记1个 */
 	if (tcp_is_reno(tp)) {
 		tcp_mark_head_lost(sk, 1, 1);
 	} else if (tcp_is_fack(tp)) {
+    /* 如果支持fack*/
 		int lost = tp->fackets_out - tp->reordering;
 		if (lost <= 0)
 			lost = 1;
 		tcp_mark_head_lost(sk, lost, 0);
 	} else {
+    /* 如果支持sack*/
 		int sacked_upto = tp->sacked_out - tp->reordering;
 		if (sacked_upto >= 0)
 			tcp_mark_head_lost(sk, sacked_upto, 0);
@@ -2684,11 +2705,13 @@ void tcp_simple_retransmit(struct sock *sk)
 }
 EXPORT_SYMBOL(tcp_simple_retransmit);
 
+/* 进入快速重传/快速恢复阶段 */
 static void tcp_enter_recovery(struct sock *sk, bool ece_ack)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	int mib_idx;
 
+    /* 根据是否支持SACK，来增加不同的计数器 */
 	if (tcp_is_reno(tp))
 		mib_idx = LINUX_MIB_TCPRENORECOVERY;
 	else
@@ -2700,10 +2723,11 @@ static void tcp_enter_recovery(struct sock *sk, bool ece_ack)
 	tp->undo_marker = tp->snd_una;
 	tp->undo_retrans = tp->retrans_out;
 
+    /* 小于TCP_CA_CWR意味着是open或disorder状态 */
 	if (inet_csk(sk)->icsk_ca_state < TCP_CA_CWR) {
 		if (!ece_ack)
 			tp->prior_ssthresh = tcp_current_ssthresh(sk);
-		tcp_init_cwnd_reduction(sk, true);
+		tcp_init_cwnd_reduction(sk, true);  /* 正式进入recovery阶段,初始化函数 */
 	}
 	tcp_set_ca_state(sk, TCP_CA_Recovery);
 }
@@ -2987,18 +3011,24 @@ void tcp_rearm_rto(struct sock *sk)
 /* This function is called when the delayed ER timer fires. TCP enters
  * fast recovery and performs fast-retransmit.
  */
+/* 所谓delayed ER timer就是Linux选择等待稍微delay一下,避免spurious retrans的一种措施 */
 void tcp_resume_early_retransmit(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	tcp_rearm_rto(sk);
+    /* 当ER timer超时后，进入快速重传，并重设RTO超时 */
+	tcp_rearm_rto(sk);  
 
 	/* Stop if ER is disabled after the delayed ER timer is scheduled */
 	if (!tp->do_early_retrans)
 		return;
 
+    /* 进入TCP_CA_Recovery阶段，即快速重传/快速恢复阶段 */
 	tcp_enter_recovery(sk, false);
+    /* 更新scoreboard，将判断为丢包的skb标记为已丢失状态，即TCPCB_LOST状态
+     * 具体的判断为丢包的方法要根据是否支持sack, 是否支持fack来定 */
 	tcp_update_scoreboard(sk, 1);
+    /* 更新重传队列的scoreboard后，可以根据各个skb的标记进行重传了，下面这个函数会遍历重传队列 */
 	tcp_xmit_retransmit_queue(sk);
 }
 
