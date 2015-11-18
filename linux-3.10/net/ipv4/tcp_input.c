@@ -108,6 +108,7 @@ int sysctl_tcp_early_retrans __read_mostly = 3;
 #define FLAG_ECE		0x40 /* ECE in this ACK				*/
 #define FLAG_SLOWPATH		0x100 /* Do not skip RFC checks for window update.*/
 #define FLAG_ORIG_SACK_ACKED	0x200 /* Never retransmitted data are (s)acked	*/
+/* TODO： 为什么FLAG_SND_UNA_ADVANCED不等于FLAG_DATA_ACKED ？ */
 #define FLAG_SND_UNA_ADVANCED	0x400 /* Snd_una was changed (!= FLAG_DATA_ACKED) */
 #define FLAG_DSACKING_ACK	0x800 /* SACK blocks contained D-SACK info */
 #define FLAG_SACK_RENEGING	0x2000 /* snd_una advanced to a sacked seq */
@@ -3281,6 +3282,7 @@ static int tcp_ack_update_window(struct sock *sk, const struct sk_buff *skb, u32
 	int flag = 0;
 	u32 nwin = ntohs(tcp_hdr(skb)->window);
 
+    /* 如果不带SYN标记，则还要考虑window scale值 */
 	if (likely(!tcp_hdr(skb)->syn))
 		nwin <<= tp->rx_opt.snd_wscale;
 
@@ -3310,14 +3312,19 @@ static int tcp_ack_update_window(struct sock *sk, const struct sk_buff *skb, u32
 }
 
 /* RFC 5961 7 [ACK Throttling] */
+/* 如果在now的粒度(1s?)内，收到的有问题的ack个数不超过sysctl_tcp_challenge_ack_limit(默认值100)个，则发送一个challenge_ack */
 static void tcp_send_challenge_ack(struct sock *sk)
 {
 	/* unprotected vars, we dont care of overwrites */
+    /* 为数不多的使用static变量的位置，提醒一下 */
 	static u32 challenge_timestamp;
 	static unsigned int challenge_count;
+    /* TODO： 确认now的粒度具体是多少，怎么算出来的 */
 	u32 now = jiffies / HZ;
 
+    /* now的粒度是1s?，如果now == challenge_timestmps，意味着tcp_send_changenge_ack是在1s内被调用 */
 	if (now != challenge_timestamp) {
+        /* 如果过了1s,则重设challenge_timestamp和challenge_count */
 		challenge_timestamp = now;
 		challenge_count = 0;
 	}
@@ -3397,7 +3404,14 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 	u32 prior_snd_una = tp->snd_una;
-	u32 ack_seq = TCP_SKB_CB(skb)->seq;
+    /* TCP_SKB_CB(skb)->seq 与 TCP_SKB_CB(skb)->ack_seq的区别在哪？
+     * 根据原有注释的字面意思理解：前者是该TCP ACK包的起始序号, 后者是被确认的序号
+     * 但还是解释的不够透彻
+     * 理解：TCP_SKB_CB(skb)中的seq是对端的seq，ack_seq是对端确认本端发过去的数据，
+     * 所以本地处理这个ACK包时，需要将ack_seq解释成这个ACK包按序确认了本地的那个序号(ack) 
+     * 而TCP_SKB_CB(skb)->seq是对端对这个ACK包中数据的序号，这个序号是需要本端发送给对端的确认数据
+     * 一句话总结：下面等号左边的ack_seq是对端的序号，ack是本地的序号 */
+	u32 ack_seq = TCP_SKB_CB(skb)->seq;     
 	u32 ack = TCP_SKB_CB(skb)->ack_seq;
 	bool is_dupack = false;
 	u32 prior_in_flight;
@@ -3410,10 +3424,13 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 	/* If the ack is older than previous acks
 	 * then we can probably ignore it.
 	 */
+    /* 如果被确认的数据号比处理这个ACK包之前的snd_una还小，则这个ACK需要被丢弃 */
 	if (before(ack, prior_snd_una)) {
 		/* RFC 5961 5.2 [Blind Data Injection Attack].[Mitigation] */
+        /* max_window是看到过的对端发送过来的最大的接收窗口大小
+         * 如果ack序号比snd_una - max_window都小，就怀疑这个有人在进行 blind data injection攻击了 */
 		if (before(ack, prior_snd_una - tp->max_window)) {
-			tcp_send_challenge_ack(sk);
+			tcp_send_challenge_ack(sk);     /* 发送一个challenge_ack给对端 */
 			return -1;
 		}
 		goto old_ack;
@@ -3425,10 +3442,13 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 	if (after(ack, tp->snd_nxt))
 		goto invalid_ack;
 
-	if (icsk->icsk_pending == ICSK_TIME_EARLY_RETRANS ||
-	    icsk->icsk_pending == ICSK_TIME_LOSS_PROBE)
+    /* 理解后续代码是要记得：之后的处理中，ack序号已经满足合法范围 [prior_snd_una, tp->snd_nxt] */
+
+	if (icsk->icsk_pending == ICSK_TIME_EARLY_RETRANS ||    /* 如果之前启动了ER timer，收到ACK后重新设置RTO timer */
+	    icsk->icsk_pending == ICSK_TIME_LOSS_PROBE)         /* 如果之前启动了PTO，收到ACK后重新设置RTO timer */
 		tcp_rearm_rto(sk);
 
+    /* 如果ack序号大于处理这个ACK包之前的snd_una，则标记有新数据被确认掉了，也就是snd_una需要前移了(advanced) */
 	if (after(ack, prior_snd_una))
 		flag |= FLAG_SND_UNA_ADVANCED;
 
@@ -3441,19 +3461,22 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 	if (flag & FLAG_UPDATE_TS_RECENT)
 		tcp_replace_ts_recent(tp, TCP_SKB_CB(skb)->seq);
 
+    /* 如果不是慢速路径，并且ack大于处理该ACK包之前的snd_una, 进而被认定为: pure forward advance */
+    /* TODO：根据目前的了解，不是FLAG_SLOWPATH不就是Fast path了吗 ？ */
 	if (!(flag & FLAG_SLOWPATH) && after(ack, prior_snd_una)) {
 		/* Window is constant, pure forward advance.
 		 * No more checks are required.
 		 * Note, we use the fact that SND.UNA>=SND.WL2.
 		 */
 		tcp_update_wl(tp, ack_seq);
-		tp->snd_una = ack;
+		tp->snd_una = ack;      /* 更新snd_una */
 		flag |= FLAG_WIN_UPDATE;
 
-		tcp_ca_event(sk, CA_EVENT_FAST_ACK);
+		tcp_ca_event(sk, CA_EVENT_FAST_ACK);    /* in sequence ack, 按序到达，且确认了新数据的ACK */
 
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPHPACKS);
 	} else {
+        /* 如果ACK包中有数据，标记FLAG_DATA, 否则增加TCPPUREACKS计数器的值 */
 		if (ack_seq != TCP_SKB_CB(skb)->end_seq)
 			flag |= FLAG_DATA;
 		else
