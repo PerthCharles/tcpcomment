@@ -1915,6 +1915,7 @@ repair:
 	return (push_one == 2) || (!tp->packets_out && tcp_send_head(sk));
 }
 
+/* 尝试安装Probe Timer (PTO), 返回true表示安装成功 */
 bool tcp_schedule_loss_probe(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
@@ -1922,9 +1923,12 @@ bool tcp_schedule_loss_probe(struct sock *sk)
 	u32 timeout, tlp_time_stamp, rto_time_stamp;
 	u32 rtt = tp->srtt >> 3;
 
+    /* 如果已经安装了ER timer，则放弃安装PTO */
 	if (WARN_ON(icsk->icsk_pending == ICSK_TIME_EARLY_RETRANS))
 		return false;
+
 	/* No consecutive loss probes. */
+    /* 如果已经安装了PTO，则放弃安装,重设RTO timer */
 	if (WARN_ON(icsk->icsk_pending == ICSK_TIME_LOSS_PROBE)) {
 		tcp_rearm_rto(sk);
 		return false;
@@ -1942,10 +1946,14 @@ bool tcp_schedule_loss_probe(struct sock *sk)
 	/* Schedule a loss probe in 2*RTT for SACK capable connections
 	 * in Open state, that are either limited by cwnd or application.
 	 */
-	if (sysctl_tcp_early_retrans < 3 || !rtt || !tp->packets_out ||
-	    !tcp_is_sack(tp) || inet_csk(sk)->icsk_ca_state != TCP_CA_Open)
+	if (sysctl_tcp_early_retrans < 3 ||     /* 如果没开TLP */
+        !rtt ||                             /* 没有RTT sample可用，没法设置PTO */
+        !tp->packets_out ||                 /* 没有未被确认的数据包 */
+	    !tcp_is_sack(tp) ||                 /* TLP依赖于SACK选项 */
+        inet_csk(sk)->icsk_ca_state != TCP_CA_Open)     /* 只有在Open状态才设置PTO */
 		return false;
 
+    /* 如果有新数据可以待发送，且cwnd允许，也不用设置PTO */
 	if ((tp->snd_cwnd > tcp_packets_in_flight(tp)) &&
 	     tcp_send_head(sk))
 		return false;
@@ -1960,14 +1968,17 @@ bool tcp_schedule_loss_probe(struct sock *sk)
 	timeout = max_t(u32, timeout, msecs_to_jiffies(10));
 
 	/* If RTO is shorter, just schedule TLP in its place. */
+    /* 说白了就是PTO = min(PTO, RTO) */
 	tlp_time_stamp = tcp_time_stamp + timeout;
 	rto_time_stamp = (u32)inet_csk(sk)->icsk_timeout;
+    /* 注意这个地方s32类型的使用 */
 	if ((s32)(tlp_time_stamp - rto_time_stamp) > 0) {
 		s32 delta = rto_time_stamp - tcp_time_stamp;
 		if (delta > 0)
 			timeout = delta;
 	}
 
+    /* 至此可以设置PTO, PTO超时的处理函数是tcp_send_loss_probe */
 	inet_csk_reset_xmit_timer(sk, ICSK_TIME_LOSS_PROBE, timeout,
 				  TCP_RTO_MAX);
 	return true;
@@ -2022,7 +2033,7 @@ void tcp_send_loss_probe(struct sock *sk)
 
 	/* Record snd_nxt for loss detection. */
 	if (likely(!err))
-		tp->tlp_high_seq = tp->snd_nxt;
+		tp->tlp_high_seq = tp->snd_nxt;     /* 记录发送TLP包时的snd_nxt */
 
 rearm_timer:
     /* 重新安装RTO超时计时器 */

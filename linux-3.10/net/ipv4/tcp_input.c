@@ -3354,28 +3354,39 @@ static void tcp_replace_ts_recent(struct tcp_sock *tp, u32 seq)
 static void tcp_process_tlp_ack(struct sock *sk, u32 ack, int flag)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	bool is_tlp_dupack = (ack == tp->tlp_high_seq) &&
+    /* 判断这个ACK是否是由TLP包触发的，并且判断是否是一个dupack，即多余发送的 */
+	bool is_tlp_dupack = (ack == tp->tlp_high_seq) &&       /* 如果ack序号就是TLP包发送时的snd_nxt */
+                /* 以下flag都没有设置：
+                 * FLAG_SND_UNA_ADVANCED 未设置表示这个ACK包并没有移动SND_UNA,即没有确认新的数据！dupack的重要标记
+                 * FLAG_NOT_DUP 未设置表示 
+                 *      1. 这个ACK不携带数据
+                 *      2. 不是一个window update包（window update包本质上是一个不带数据的dupack包
+                 *      3. 确认ACK没有确认过新的数据，dupack的重要标记
+                 * FLAG_DATA_SACKED 未设置表示没有携带任何新SACK块 */
 			     !(flag & (FLAG_SND_UNA_ADVANCED |
 				       FLAG_NOT_DUP | FLAG_DATA_SACKED));
 
 	/* Mark the end of TLP episode on receiving TLP dupack or when
 	 * ack is after tlp_high_seq.
 	 */
+    /* 如果判断出TLP探测包是完全多余的，则直接返回 */
 	if (is_tlp_dupack) {
 		tp->tlp_high_seq = 0;
 		return;
 	}
 
+    /* 如果确认的新的数据 */
 	if (after(ack, tp->tlp_high_seq)) {
 		tp->tlp_high_seq = 0;
 		/* Don't reduce cwnd if DSACK arrives for TLP retrans. */
+        /* 如果发现DSACK，也意味着TLP是多余，*/
 		if (!(flag & FLAG_DSACKING_ACK)) {
+            /* 下面这么一大圈，重点就是降了cwnd： ssthresh = 0.7 * cwnd; cwnd = ssthresh */
 			tcp_init_cwnd_reduction(sk, true);
 			tcp_set_ca_state(sk, TCP_CA_CWR);
 			tcp_end_cwnd_reduction(sk);
 			tcp_set_ca_state(sk, TCP_CA_Open);
-			NET_INC_STATS_BH(sock_net(sk),
-					 LINUX_MIB_TCPLOSSPROBERECOVERY);
+			NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPLOSSPROBERECOVERY); /* 通过TLP技术恢复了一次尾丢包则加1 */
 		}
 	}
 }
