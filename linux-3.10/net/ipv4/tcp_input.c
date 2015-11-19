@@ -255,6 +255,7 @@ static inline void TCP_ECN_rcv_syn(struct tcp_sock *tp, const struct tcphdr *th)
 		tp->ecn_flags &= ~TCP_ECN_OK;
 }
 
+/* 判断是否收到了显示拥塞通知 */
 static bool TCP_ECN_rcv_ecn_echo(const struct tcp_sock *tp, const struct tcphdr *th)
 {
 	if (th->ece && !th->syn && (tp->ecn_flags & TCP_ECN_OK))
@@ -2598,12 +2599,14 @@ static void tcp_try_keep_open(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	int state = TCP_CA_Open;
 
+    /* 如果有被SACK的数据包，或有被推断为loss的数据包，或者已经发送过重传包 */
 	if (tcp_left_out(tp) || tcp_any_retrans_done(sk))
 		state = TCP_CA_Disorder;
 
+    /* 如果以上情况都没有，则转换到TCP_CA_Open状态 */
 	if (inet_csk(sk)->icsk_ca_state != state) {
 		tcp_set_ca_state(sk, state);
-		tp->high_seq = tp->snd_nxt;
+		tp->high_seq = tp->snd_nxt;     /* 设置开始进入Open，或Disorder状态时的snd_nxt */
 	}
 }
 
@@ -3273,7 +3276,7 @@ static inline bool tcp_may_raise_cwnd(const struct sock *sk, const int flag)
 /* Check that window update is acceptable.
  * The function assumes that snd_una<=ack<=snd_next.
  */
-/* 判断确认好ack是否更新发送窗口 */
+/* 判断确认号ack是否更新发送窗口 */
 /* TODO: 这里的window update，到底是发送窗口更新，还是接收窗口更新？ */
 static inline bool tcp_may_update_window(const struct tcp_sock *tp,
 					const u32 ack, const u32 ack_seq,
@@ -3314,12 +3317,14 @@ static int tcp_ack_update_window(struct sock *sk, const struct sk_buff *skb, u32
 			/* Note, it is the only place, where
 			 * fast path is recovered for sending TCP.
 			 */
+            /* 首部预测标志与接收窗口大小有关，因此需要重新计算 */
 			tp->pred_flags = 0;
+            /* 检查是否能使用首部预测，如果可以则重新计算首部预测标志 */
 			tcp_fast_path_check(sk);
 
 			if (nwin > tp->max_window) {
 				tp->max_window = nwin;  /* max_window记录都是收到过的最大接收窗口 */
-				tcp_sync_mss(sk, inet_csk(sk)->icsk_pmtu_cookie);
+				tcp_sync_mss(sk, inet_csk(sk)->icsk_pmtu_cookie);   /* 更新MSS */
 			}
 		}
 	}
