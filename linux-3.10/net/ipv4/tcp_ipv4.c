@@ -1920,6 +1920,10 @@ bool tcp_prequeue(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
+    /* 1. 如果更关注延迟，则不放入prequeue: tcp_low_latency默认关闭
+     *      怎么理解：
+     *          a. 如果放入prequeue中，数据会更快的给到用户态，也就更侧重throughput
+     * 2. 如果用户态没有进程在等待数据到来，也不用放入prequeue */
 	if (sysctl_tcp_low_latency || !tp->ucopy.task)
 		return false;
 
@@ -1999,6 +2003,7 @@ int tcp_v4_rcv(struct sk_buff *skb)
 	TCP_SKB_CB(skb)->ip_dsfield = ipv4_get_dsfield(iph);
 	TCP_SKB_CB(skb)->sacked	 = 0;   /* 初始化sacked标记 */
 
+    /* 找到skb属于哪个sock 结构体 */
 	sk = __inet_lookup_skb(&tcp_hashinfo, skb, th->source, th->dest);
 	if (!sk)
 		goto no_tcp_socket;
@@ -2023,6 +2028,7 @@ process:
 
 	bh_lock_sock_nested(sk);
 	ret = 0;
+    /* 如果sock未被user占用 */
 	if (!sock_owned_by_user(sk)) {
 #ifdef CONFIG_NET_DMA
 		struct tcp_sock *tp = tcp_sk(sk);
@@ -2033,12 +2039,15 @@ process:
 		else
 #endif
 		{
+            /* 如果符合加入prequeue的原则，则加入prequeue,返回true; 反之返回false */
 			if (!tcp_prequeue(sk, skb))
 				ret = tcp_v4_do_rcv(sk, skb);
 		}
+    /* 如果sock被占用，则放到backlog queue中 */
 	} else if (unlikely(sk_add_backlog(sk, skb,
 					   sk->sk_rcvbuf + sk->sk_sndbuf))) {
 		bh_unlock_sock(sk);
+        /* 如果也没能放入backlog queue，则计数器加1，并丢弃该数据包 */
 		NET_INC_STATS_BH(net, LINUX_MIB_TCPBACKLOGDROP);
 		goto discard_and_relse;
 	}

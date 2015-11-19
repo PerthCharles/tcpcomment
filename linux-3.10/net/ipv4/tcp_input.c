@@ -2322,7 +2322,9 @@ static inline void tcp_moderate_cwnd(struct tcp_sock *tp)
  */
 static inline bool tcp_packet_delayed(const struct tcp_sock *tp)
 {
-	return !tp->retrans_stamp ||
+	return !tp->retrans_stamp ||    /* 如果之前未发送过重传数据包，则可以undo */
+        /* 如果支持timestamp，并且也收到了tsecr，并且收到的这个数据包的timestamp
+         * 比这次重传开始时间还早，那么也能证明重传是多余的，可以undo */
 		(tp->rx_opt.saw_tstamp && tp->rx_opt.rcv_tsecr &&
 		 before(tp->rx_opt.rcv_tsecr, tp->retrans_stamp));
 }
@@ -2359,6 +2361,7 @@ static void DBGUNDO(struct sock *sk, const char *msg)
 #define DBGUNDO(x...) do { } while (0)
 #endif
 
+/* 负责实际撤销cwnd reduction */
 static void tcp_undo_cwr(struct sock *sk, const bool undo_ssthresh)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -2366,21 +2369,37 @@ static void tcp_undo_cwr(struct sock *sk, const bool undo_ssthresh)
 	if (tp->prior_ssthresh) {
 		const struct inet_connection_sock *icsk = inet_csk(sk);
 
+        /* 如果拥塞拥塞算法有自身的undo_cwnd处理函数，则调用拥塞算法自身的处理函数 */
 		if (icsk->icsk_ca_ops->undo_cwnd)
 			tp->snd_cwnd = icsk->icsk_ca_ops->undo_cwnd(sk);
 		else
+        /* ssthresh一般就是reduce cwnd之前的cwnd值的一半，因此至少要将cwnd恢复成ssthresh的两倍 */
 			tp->snd_cwnd = max(tp->snd_cwnd, tp->snd_ssthresh << 1);
 
+        /* 如果同时需要恢复慢启动阈值，则将ssthresh恢复为prior_ssthresh */
 		if (undo_ssthresh && tp->prior_ssthresh > tp->snd_ssthresh) {
 			tp->snd_ssthresh = tp->prior_ssthresh;
-			TCP_ECN_withdraw_cwr(tp);
+			TCP_ECN_withdraw_cwr(tp);   /* TODO： 标记不再信任ECN提供的cwr信息 ？ */
 		}
 	} else {
+        /* 如果没有保存过之前的ssthresh，则仅将cwnd恢复到当前ssthresh */
 		tp->snd_cwnd = max(tp->snd_cwnd, tp->snd_ssthresh);
 	}
 	tp->snd_cwnd_stamp = tcp_time_stamp;
 }
 
+/* 判断是否能撤销cwnd的调整
+ * 由于TCP无法明确的知道某个包是真的丢了，还是被延迟了。尽管TCP使用许多技术(如SACK，FACK)等机制来推测丢包，但依然可能进行了误判。
+ * 当TCP误判某个包丢失时，可能进入recovery或loss状态，不管具体进入哪一个，都会调整拥塞窗口，而且是调小。
+ * 因此后续发现了足够的证据，发现是误判，那么TCP会尝试undo之前的reduction。
+ *
+ * 当满足以下条件之一时，则可以undo cwnd reduction了
+ * 1. undo_retrans等于0
+ *      最近一次恢复期间重传的数据包个数为undo_retrans
+ *      如果收到了足够的D-SACK信息，将undo_retrans减到0了，则说明重传是没有必要的，进而可以undo
+ * 2. 如果之前未发送过重传数据包，则可以undo
+ * 3. 如果支持timestamp，并且也收到了tsecr，并且收到的这个数据包的timestamp
+ *    比这次重传开始时间还早，那么也能证明重传是多余的，可以undo */
 static inline bool tcp_may_undo(const struct tcp_sock *tp)
 {
 	return tp->undo_marker && (!tp->undo_retrans || tcp_packet_delayed(tp));
@@ -2392,13 +2411,14 @@ static bool tcp_try_undo_recovery(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	if (tcp_may_undo(tp)) {
+        /* 如果可以进行undo */
 		int mib_idx;
 
 		/* Happy end! We did not retransmit anything
 		 * or our original transmission succeeded.
 		 */
 		DBGUNDO(sk, inet_csk(sk)->icsk_ca_state == TCP_CA_Loss ? "loss" : "retrans");
-		tcp_undo_cwr(sk, true);
+		tcp_undo_cwr(sk, true);     /* 撤销cwnd reduction */
 		if (inet_csk(sk)->icsk_ca_state == TCP_CA_Loss)
 			mib_idx = LINUX_MIB_TCPLOSSUNDO;
 		else
@@ -2423,10 +2443,12 @@ static void tcp_try_undo_dsack(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
+    /* D-SACK可以通知发送方，新到的段是已经接收过的。
+     * 如果所有在最近一次恢复期间重传的数据段都被D-SACK确认了，则发送方知道这此重传是不必要触发的 */
 	if (tp->undo_marker && !tp->undo_retrans) {
 		DBGUNDO(sk, "D-SACK");
-		tcp_undo_cwr(sk, true);
-		tp->undo_marker = 0;
+		tcp_undo_cwr(sk, true); /* 恢复cwnd，并且也恢复ssthresh */
+		tp->undo_marker = 0;    /* TODO: undo_marker标记的是重传开始的位置，undo一次后自然要归零 */
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPDSACKUNDO);
 	}
 }
@@ -2450,10 +2472,12 @@ static bool tcp_any_retrans_done(const struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *skb;
 
+    /* 如果明确的有retrans_out数据，则证明当前网络中有未确认的重传包 */
 	if (tp->retrans_out)
 		return true;
 
 	skb = tcp_write_queue_head(sk);
+    /* 发送队列中的第一个数据包曾经发生过重传 */
 	if (unlikely(skb && TCP_SKB_CB(skb)->sacked & TCPCB_EVER_RETRANS))
 		return true;
 
@@ -2461,11 +2485,13 @@ static bool tcp_any_retrans_done(const struct sock *sk)
 }
 
 /* Undo during fast recovery after partial ACK. */
-
+/* TODO: 这个partial ACK为什么能判断出要undo ? */
 static int tcp_try_undo_partial(struct sock *sk, int acked)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	/* Partial ACK arrived. Force Hoe's retransmit. */
+    /* 如果不支持SACK，或者乱序已经超过reordering，则理论上应该返回failed，启动Hoe's retransmit */
+    /* TODO: Hoe's retransmit到底是什么 */
 	int failed = tcp_is_reno(tp) || (tcp_fackets_out(tp) > tp->reordering);
 
 	if (tcp_may_undo(tp)) {
@@ -2495,8 +2521,10 @@ static bool tcp_try_undo_loss(struct sock *sk, bool frto_undo)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
+    /* 如果通过F-RTO发现要undo，或者其他机制(D-SACK，timestamp)发现要undo */
 	if (frto_undo || tcp_may_undo(tp)) {
 		struct sk_buff *skb;
+        /* 取消scoreboard中的所有loss标记 */
 		tcp_for_write_queue(skb, sk) {
 			if (skb == tcp_send_head(sk))
 				break;
@@ -2507,13 +2535,15 @@ static bool tcp_try_undo_loss(struct sock *sk, bool frto_undo)
 
 		DBGUNDO(sk, "partial loss");
 		tp->lost_out = 0;
-		tcp_undo_cwr(sk, true);
+		tcp_undo_cwr(sk, true);     /* 撤销cwnd reduction */
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPLOSSUNDO);
 		if (frto_undo)
 			NET_INC_STATS_BH(sock_net(sk),
 					 LINUX_MIB_TCPSPURIOUSRTOS);
 		inet_csk(sk)->icsk_retransmits = 0;
 		tp->undo_marker = 0;
+        /* 如果是F-RTO发现要undo, 或者是支持SACK，则将状态恢复为Open */
+        /* TODO: 为什么不支持SACK不行？ */
 		if (frto_undo || tcp_is_sack(tp))
 			tcp_set_ca_state(sk, TCP_CA_Open);
 		return true;

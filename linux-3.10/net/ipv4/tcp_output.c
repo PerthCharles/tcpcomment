@@ -2416,6 +2416,9 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 		tp->retrans_out += tcp_skb_pcount(skb);
 
 		/* Save stamp of the first retransmit. */
+        /* 记录最近一次重传开始的时间，不包括SYN包
+         * 为什么要强调是最近一次重传？ 因为一次重传结束后，该值会被重置为0
+         * 因此原始的英文注释是不准确的 */
 		if (!tp->retrans_stamp)
 			tp->retrans_stamp = TCP_SKB_CB(skb)->when;
 
@@ -2964,6 +2967,7 @@ int tcp_connect(struct sock *sk)
 	skb_reserve(buff, MAX_TCP_HEADER);
 
 	tcp_init_nondata_skb(buff, tp->write_seq++, TCPHDR_SYN);
+    /* 记录发送SYN包的时间 */
 	tp->retrans_stamp = TCP_SKB_CB(buff)->when = tcp_time_stamp;
 	tcp_connect_queue_skb(sk, buff);
 	TCP_ECN_send_syn(sk, buff);

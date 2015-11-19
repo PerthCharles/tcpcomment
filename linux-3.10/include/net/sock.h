@@ -777,6 +777,7 @@ static inline bool sk_rcvqueues_full(const struct sock *sk, const struct sk_buff
 static inline __must_check int sk_add_backlog(struct sock *sk, struct sk_buff *skb,
 					      unsigned int limit)
 {
+    /* 如果接受队列已满，则返回空间不足错误 */
 	if (sk_rcvqueues_full(sk, skb, limit))
 		return -ENOBUFS;
 
