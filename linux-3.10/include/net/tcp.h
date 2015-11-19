@@ -914,6 +914,8 @@ static inline bool tcp_in_initial_slowstart(const struct tcp_sock *tp)
 	return tp->snd_ssthresh >= TCP_INFINITE_SSTHRESH;
 }
 
+/* 判断是否已经(或即将)处于快速重传/快速恢复状态
+ * 不管是CWR还是Recovery都是处于准备降低cwnd的状态 */
 static inline bool tcp_in_cwnd_reduction(const struct sock *sk)
 {
 	return (TCPF_CA_CWR | TCPF_CA_Recovery) &

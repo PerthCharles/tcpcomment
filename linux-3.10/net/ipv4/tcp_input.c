@@ -2967,6 +2967,7 @@ static inline void tcp_ack_update_rtt(struct sock *sk, const int flag,
 		tcp_ack_no_tstamp(sk, seq_rtt, flag);
 }
 
+/* 调用拥塞避免算法，来增大cwnd。比如如果使用CUBIC算法，则上tcp_cubic.c中找.cong_avoid对应的函数 */
 static void tcp_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
@@ -3225,13 +3226,15 @@ static int tcp_clean_rtx_queue(struct sock *sk, int prior_fackets,
 	return flag;
 }
 
+/* 在处理一个ack后，如果接收窗口足够大，则要清除zero window probe timer;
+ * 否则，就需要重设zero window probe timer */
 static void tcp_ack_probe(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct inet_connection_sock *icsk = inet_csk(sk);
 
 	/* Was it a usable window open? */
-
+    /* 如果发送队列中的第一个SKB的尾序号 <= 被接收窗口允许的序号，则放弃zero window probe */
 	if (!after(TCP_SKB_CB(tcp_send_head(sk))->end_seq, tcp_wnd_end(tp))) {
 		icsk->icsk_backoff = 0;
 		inet_csk_clear_xmit_timer(sk, ICSK_TIME_PROBE0);
@@ -3239,23 +3242,32 @@ static void tcp_ack_probe(struct sock *sk)
 		 * This function is not for random using!
 		 */
 	} else {
+        /* 可见zero window probe timer也是指数回避的形式增长的 */
 		inet_csk_reset_xmit_timer(sk, ICSK_TIME_PROBE0,
 					  min(icsk->icsk_rto << icsk->icsk_backoff, TCP_RTO_MAX),
 					  TCP_RTO_MAX);
 	}
 }
 
+/* 根据flag判断一个ACK包是否可疑 */
 static inline bool tcp_ack_is_dubious(const struct sock *sk, const int flag)
 {
-	return !(flag & FLAG_NOT_DUP) || (flag & FLAG_CA_ALERT) ||
-		inet_csk(sk)->icsk_ca_state != TCP_CA_Open;
+    /* FLAG_NOT_DUP包括： (FLAG_DATA|FLAG_WIN_UPDATE|FLAG_ACKED)
+     * 如果这个ACK，不携带数据，不更新窗口，也不确认数据，那这肯定是一个值得怀疑的ACK
+     * FLAG_NOT_DUP只要不为0，则可以认为这个ACK不是dupack(NOT DUP) */
+	return !(flag & FLAG_NOT_DUP) ||        
+           (flag & FLAG_CA_ALERT) ||        /* 如果有拥塞信号(sack或ece),则要谨慎处理 */
+		   inet_csk(sk)->icsk_ca_state != TCP_CA_Open;  /* 不是Open状态，自然要谨慎处理ACK */
 }
 
+/* 判断是否可以使用拥塞避免增大cwnd */
 static inline bool tcp_may_raise_cwnd(const struct sock *sk, const int flag)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
-	return (!(flag & FLAG_ECE) || tp->snd_cwnd < tp->snd_ssthresh) &&
-		!tcp_in_cwnd_reduction(sk);
+            /* 1. 如果携带了ECE标记，并且cwnd已经不小于ssthresh，则不能增大cwnd */
+	return (!(flag & FLAG_ECE) || tp->snd_cwnd < tp->snd_ssthresh) && 
+            /* 如果已经处于cwnd_reduction状态，则不可能又执行增大cwnd的操作，故不执行拥塞避免 */
+		   !tcp_in_cwnd_reduction(sk);
 }
 
 /* Check that window update is acceptable.
@@ -3367,7 +3379,7 @@ static void tcp_replace_ts_recent(struct tcp_sock *tp, u32 seq)
 static void tcp_process_tlp_ack(struct sock *sk, u32 ack, int flag)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-    /* 判断这个ACK是否是由TLP包触发的，并且判断是否是一个dupack，即多余发送的 */
+    /* 判断这个ACK是否是由TLP包触发的，并且是一个dupack，即多余发送的 */
 	bool is_tlp_dupack = (ack == tp->tlp_high_seq) &&       /* 如果ack序号就是TLP包发送时的snd_nxt */
                 /* 以下flag都没有设置：
                  * FLAG_SND_UNA_ADVANCED 未设置表示这个ACK包并没有移动SND_UNA,即没有确认新的数据！dupack的重要标记
@@ -3515,46 +3527,71 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 	icsk->icsk_probes_out = 0;
 	tp->rcv_tstamp = tcp_time_stamp;
     /* 如果packets_out为0，即没有发送且未被按序确认的数据包
-     * 则进入no_queue逻辑。 TODO： no_queue内在含义是什么？ */
+     * 则进入no_queue逻辑。 
+     * DONE： no_queue内在含义是什么？
+     * no_queue表示发送队列为空, 也就是packets_out == 0 */
 	if (!prior_packets)
 		goto no_queue;
 
 	/* See if we can take anything off of the retransmit queue. */
-    /* TODO: 这个地方为什么要重新拿一次packets_out ?
+    /* 这个地方为什么要重新拿一次packets_out ?
      * 目前知道tp->snd_una可能会改变，但是暂时还没找到使用改变后的snd_una去更新packets_out的代码
-     * 查找代码发现，tp->packets_out仅会在发送了数据包的情况下改变，也就是说上面某个过程中会发送数据包？ */
+     * 查找代码发现，tp->packets_out仅会在发送了数据包的情况下改变，也就是说上面某个过程中会发送数据包？
+     *
+     * 更新：previous_packets_out变量的引入请查看该patch: https://github.com/torvalds/linux/commit/35f079ebbc860dcd1cca70890c9c8d59c1145525
+     * 根本的原因就是在下面这个调用序列中，packets_out可能被改变！
+     * tcp_sacktag_write_queue -> tcp_sacktag_write_queue -> tcp_sacktag_walk -> tcp_match_skb_to_sack -> tcp_fragment -> tcp_adjust_pcount */
 	previous_packets_out = tp->packets_out;
+    /* 删除重传队列中已经确认的数据段 */
 	flag |= tcp_clean_rtx_queue(sk, prior_fackets, prior_snd_una);
 
+    /* 计算此次被ACKed的数据包个数 */
 	pkts_acked = previous_packets_out - tp->packets_out;
 
+    /* 检查这是否是一个可疑的ACK：dupack, 带SACK，或者不是Open状态 */
+    /* 一旦发现可疑的ACK，则意味着要么已经处于非open状态，要么就是刚收到拥塞信号，即将离开Open状态 */
 	if (tcp_ack_is_dubious(sk, flag)) {
 		/* Advance CWND, if state allows this. */
+        /* 如果此时想进行拥塞避免算法增大cwnd，必须满足:
+         * 1. 这个ACK确认了新的数据
+         * 2. 通过检查flag，满足增大cwnd的条件，具体看tcp_may_raise_cwnd() */
 		if ((flag & FLAG_DATA_ACKED) && tcp_may_raise_cwnd(sk, flag))
 			tcp_cong_avoid(sk, ack, prior_in_flight);
+        /* 判断是否是一个dupack，最完整的逻辑, NOT_DUP是dupack的充分条件，但不是必要条件 */
 		is_dupack = !(flag & (FLAG_SND_UNA_ADVANCED | FLAG_NOT_DUP));
+        /* 进入TCP的拥塞状态机，处理相关的拥塞状态 */
 		tcp_fastretrans_alert(sk, pkts_acked, prior_sacked,
 				      prior_packets, is_dupack, flag);
 	} else {
+        /* 如果不是可以的ACK，则只要ACK确认了新数据，则可以考虑增加cwnd了
+         * 这里的新数据并不包含SYN标记，尽管SYN标记也占用一个序号
+         * 所以Linux里面使用了FLAG_DATA_ACKED来表示数据的确认， FLAG_SYN_ACKED来表示SYN被确认了 */
 		if (flag & FLAG_DATA_ACKED)
 			tcp_cong_avoid(sk, ack, prior_in_flight);
 	}
 
+    /* 如果之前进行了TLP探测，则还要进行TLP相关处理 */
 	if (tp->tlp_high_seq)
 		tcp_process_tlp_ack(sk, ack, flag);
 
+    /* 如果ACK确认了新的数据(按序确认的数据，SYN段，SACK数据)
+     * 或者收到的ACK不是重复的，
+     * 则确定该传输控制块的输出路由缓存项是有效的 */
 	if ((flag & FLAG_FORWARD_PROGRESS) || !(flag & FLAG_NOT_DUP)) {
 		struct dst_entry *dst = __sk_dst_get(sk);
 		if (dst)
 			dst_confirm(dst);
 	}
 
+    /* 尝试安装PTO
+     * 安装失败，则说明还没到需要安装PTO的时候，会正常的使用RTO timer */
 	if (icsk->icsk_pending == ICSK_TIME_RETRANS)
 		tcp_schedule_loss_probe(sk);
 	return 1;
 
 no_queue:
 	/* If data was DSACKed, see if we can undo a cwnd reduction. */
+    /* 尽管此时packets_out为0，但是如果发现了DSACK信息还是要关注的 */
 	if (flag & FLAG_DSACKING_ACK)
 		tcp_fastretrans_alert(sk, pkts_acked, prior_sacked,
 				      prior_packets, is_dupack, flag);
@@ -3562,9 +3599,14 @@ no_queue:
 	 * being used to time the probes, and is probably far higher than
 	 * it needs to be for normal retransmission.
 	 */
+    /* 如果packets_out为0，但实际却有数据要发送，则可能是由于对端之前通知了一个zero window导致的
+     * 因此需要看看是否能清除zero window probe timer(recevie window更新的够大了)
+     * 当然，如果receive window更新的还是不够，那么就得重设 timer了 */
 	if (tcp_send_head(sk))
 		tcp_ack_probe(sk);
 
+    /* 如果之前进行了TLP探测，则还要进行TLP相关处理
+     * 为什么要在packets_out == 0的时候还处理呢？因为在这条路径上也还是需要关闭TLP episode的 */
 	if (tp->tlp_high_seq)
 		tcp_process_tlp_ack(sk, ack, flag);
 	return 1;
@@ -3577,6 +3619,9 @@ old_ack:
 	/* If data was SACKed, tag it and see if we should send more data.
 	 * If data was DSACKed, see if we can undo a cwnd reduction.
 	 */
+    /* 尽管这个包的确认号是比较老的，但是如果携带SACK信息，则还是要看看能不能用上的 */
+    /* 1. 这里的old_ack，也不是太老，ack序号也是大于snd_una - max_window的，更老的ACK有tcp_send_challenge_ack去处理
+     * 什么情况下这种SACK信息是有用的呢？TODO:需要找个一个例子 */
 	if (TCP_SKB_CB(skb)->sacked) {
 		flag |= tcp_sacktag_write_queue(sk, skb, prior_snd_una);
 		tcp_fastretrans_alert(sk, pkts_acked, prior_sacked,
