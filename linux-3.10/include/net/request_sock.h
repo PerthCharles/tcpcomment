@@ -151,7 +151,11 @@ struct request_sock_queue {
 	struct request_sock	*rskq_accept_head;
 	struct request_sock	*rskq_accept_tail;
 	rwlock_t		syn_wait_lock;
-	u8			rskq_defer_accept;
+    /* 如果用户配置了该值，则在收到三次握手的最后一个ACK后，如果ACK不带数据，则丢弃该ACK包
+     * 也就不会直接accept，而是等待带有数据的ACK到来才会accept。
+     * rskq_defer_accept指定defer accept的最长时间（实际使用时会转换成syn/ack的重传次数,因为这个timer是复用了
+     * syn/ack的timer), 超过指定时间还没有收到对端发送过来数据，则socket会被删除 */
+	u8			rskq_defer_accept;  
 	/* 3 bytes hole, try to pack */
 	struct listen_sock	*listen_opt;
 	struct fastopen_queue	*fastopenq; /* This is non-NULL iff TFO has been

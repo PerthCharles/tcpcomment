@@ -682,9 +682,11 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 		return sk;
 
 	/* While TCP_DEFER_ACCEPT is active, drop bare ACK. */
+    /* TODO： 为什么要判断一次num_timeout < rskq_defer_accept呢 ？
+     * 因为根据目前的理解，如果超过rskq_defer_accept的话，那个request_sock应该已经被删掉了啊。 */
 	if (req->num_timeout < inet_csk(sk)->icsk_accept_queue.rskq_defer_accept &&
-	    TCP_SKB_CB(skb)->end_seq == tcp_rsk(req)->rcv_isn + 1) {
-		inet_rsk(req)->acked = 1;
+	    TCP_SKB_CB(skb)->end_seq == tcp_rsk(req)->rcv_isn + 1) {    /* end_seq = rcv_isn+1意味着这个是一个不带数据的ACK */
+		inet_rsk(req)->acked = 1;   /* 准备丢弃三次握手的最后一个ACK包，但要记录一下收到过它 */
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPDEFERACCEPTDROP);
 		return NULL;
 	}

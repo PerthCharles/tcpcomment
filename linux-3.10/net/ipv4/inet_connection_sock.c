@@ -538,24 +538,45 @@ extern int sysctl_tcp_synack_retries;
 
 
 /* Decide when to expire the request and when to resend SYN-ACK */
-/* 这里决定request是否过期，也是用num_timeout判断，而不是num_retrans判断 */
+/* 这里决定request是否过期，也是用num_timeout判断，而不是num_retrans判断
+ * expire表示是否等了足够的时间，为true则意味着要删掉request sock
+ * resend表示是否需要重传syn/ack
+ * thresh是通过sysctl_tcp_synack_retries计算得到的阈值
+ */ 
 static inline void syn_ack_recalc(struct request_sock *req, const int thresh,
 				  const int max_retries,
 				  const u8 rskq_defer_accept,
 				  int *expire, int *resend)
 {
+    /* 如果用户程序未指定defer_accept时间，则肯定要重传syn/ack */
 	if (!rskq_defer_accept) {
-		*expire = req->num_timeout >= thresh;
+		*expire = req->num_timeout >= thresh;   /* 超时次数超过上限则判断过期 */
 		*resend = 1;
 		return;
 	}
-	*expire = req->num_timeout >= thresh &&
+
+    /* 下面的代码都是在defer_accept开启的情况下才会执行的,
+     * max_retries就是defer_accept允许的超时次数 */
+
+    /* 1. 如果没有收到三次握手的最后一个ACK(!inet_rsk(req)->acked为真),
+     * 则只要超时次数超过上限，则判定为过期
+     * 2.
+     * 如果已经收到过三次握手的最后一个ACK，同时超时次数也超过了defer_accept允许的值,
+     * 也超过了上限，则判定为过期 */
+    /* TODO: 可见max_retries并没有什么用啊，因为在用到它的时候，它只会等于rskq_defer_accept */
+	*expire = req->num_timeout >= thresh &&     
 		  (!inet_rsk(req)->acked || req->num_timeout >= max_retries);
 	/*
 	 * Do not resend while waiting for data after ACK,
 	 * start to resend on end of deferring period to give
 	 * last chance for data or ACK to create established socket.
 	 */
+    /* 1. 如果已经开启了defer_accept，如果没有收到三次握手的最后一个ACK包，当然要重传syn/ack
+     * 2. 如果已经收到了最后一个ACK包，那么仅在最后一次未导致expire的timeout发生时进行重传
+     *      TODO: 但这样会不会有BUG ？
+     *          比如一个攻击者在攻击时，每次收到syn/ack时都返回一个合法的bare
+     *          ack来完成三次握手，那么不就导致这个request sock一直存活吗？
+     */
 	*resend = !inet_rsk(req)->acked ||
 		  req->num_timeout >= rskq_defer_accept - 1;
 }
@@ -616,6 +637,7 @@ void inet_csk_reqsk_queue_prune(struct sock *parent,
 		}
 	}
 
+    /* 如果用户设置了defer accept，那么将max_retries设置成该值 */
 	if (queue->rskq_defer_accept)
 		max_retries = queue->rskq_defer_accept;
 

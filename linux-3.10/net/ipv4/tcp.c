@@ -328,6 +328,7 @@ void tcp_enter_memory_pressure(struct sock *sk)
 EXPORT_SYMBOL(tcp_enter_memory_pressure);
 
 /* Convert seconds to retransmits based on initial and max timeout */
+/* 三个参数都是以秒为单位 */
 static u8 secs_to_retrans(int seconds, int timeout, int rto_max)
 {
 	u8 res = 0;
@@ -2562,6 +2563,8 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 
 	case TCP_DEFER_ACCEPT:
 		/* Translate value in seconds to number of retransmits */
+        /* 这个地方的转换基于TCP_TIMEOUT_INIT和指数回避的策略来做
+         * 因此实际accept被defer的时间可能不太准确 */
 		icsk->icsk_accept_queue.rskq_defer_accept =
 			secs_to_retrans(val, TCP_TIMEOUT_INIT / HZ,
 					TCP_RTO_MAX / HZ);
@@ -2772,6 +2775,9 @@ static int do_tcp_getsockopt(struct sock *sk, int level,
 			val = (val ? : sysctl_tcp_fin_timeout) / HZ;
 		break;
 	case TCP_DEFER_ACCEPT:
+        /* 重新将超时次数转换为秒，因为secs_to_retrans会造成一定程度的精度损失，
+         * 如果在使用defer_accept时，比较关心精确的时间，可以在setsockopt后
+         * 用getsockopt确认一下 -- 当然懂代码实现的话，可以自己算 :) */
 		val = retrans_to_secs(icsk->icsk_accept_queue.rskq_defer_accept,
 				      TCP_TIMEOUT_INIT / HZ, TCP_RTO_MAX / HZ);
 		break;
