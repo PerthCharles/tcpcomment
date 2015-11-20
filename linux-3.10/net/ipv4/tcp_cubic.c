@@ -35,6 +35,9 @@
 
 /* Two methods of hybrid slow start */
 /* hystart中两种推出检测需要推出慢启动阶段的方法 */
+/* 一个ACK TRAIN一般可以认为是一个cwnd窗口内发送的数据包，
+ * 因此如果一个ACK TRAIN的长度达到了min_rtt的长度，说明
+ * 当前cwnd已经能够充分利用带宽，几乎跑满BDP，进而可以选择推出慢启动 */
 #define HYSTART_ACK_TRAIN	0x1
 /* 在启用该方法时，如果delay出现大幅度的增长，则说明快要或者已经出现拥塞，hystart就选择退出慢启动阶段 */
 #define HYSTART_DELAY		0x2
@@ -370,8 +373,12 @@ static void hystart_update(struct sock *sk, u32 delay)
 		u32 now = bictcp_clock();
 
 		/* first detection parameter - ack-train detection */
+        /* 如果两个ACK之间的间隔小于hystart_ack_delta(2ms),则认为这两个ACK属于一辆ACK-TRAIN */
 		if ((s32)(now - ca->last_ack) <= hystart_ack_delta) {
-			ca->last_ack = now;
+			ca->last_ack = now; /* 更新train的最后一个时间戳 */
+            /* 如果ACK TRAIN的总时间长度，超过min-rtt/2，则认为应该退出慢启动了
+             * 为什么是1/2，因为ACK只会在receiver->sender的这个方向上，ACK-TRAIN最多
+             * 只能占满半个RTT */
 			if ((s32)(now - ca->round_start) > ca->delay_min >> 4)
 				ca->found |= HYSTART_ACK_TRAIN;
 		}
@@ -440,7 +447,8 @@ static void bictcp_acked(struct sock *sk, u32 cnt, s32 rtt_us)
 		ca->delay_min = delay;
 
 	/* hystart triggers when cwnd is larger than some threshold */
-    /* 如果启用了hystart,如果在慢启动阶段，且cwnd已经超过了启动hystart的下限，则启动hystart */
+    /* 如果启用了hystart,如果在慢启动阶段，且cwnd已经超过了启动hystart的下限，
+     * 则启动hystart机制，检测是否应该推出慢启动阶段了 */
 	if (hystart && tp->snd_cwnd <= tp->snd_ssthresh &&
 	    tp->snd_cwnd >= hystart_low_window)
 		hystart_update(sk, delay);
