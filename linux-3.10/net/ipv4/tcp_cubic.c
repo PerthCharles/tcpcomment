@@ -34,7 +34,9 @@
 #define	BICTCP_HZ		10	/* BIC HZ 2^10 = 1024 */
 
 /* Two methods of hybrid slow start */
+/* hystart中两种推出检测需要推出慢启动阶段的方法 */
 #define HYSTART_ACK_TRAIN	0x1
+/* 在启用该方法时，如果delay出现大幅度的增长，则说明快要或者已经出现拥塞，hystart就选择退出慢启动阶段 */
 #define HYSTART_DELAY		0x2
 
 /* Number of delay samples for detecting the increase of delay */
@@ -146,6 +148,7 @@ static void bictcp_init(struct sock *sk)
 	bictcp_reset(ca);
 	ca->loss_cwnd = 0;
 
+    /* 如果开启hybird slow start(默认开启), 则进行相关变量的初始化 */
 	if (hystart)
 		bictcp_hystart_reset(sk);
 
@@ -377,6 +380,9 @@ static void hystart_update(struct sock *sk, u32 delay)
 
 			ca->sample_cnt++;
 		} else {
+            /* curr_rtt实际上存的是8*rtt,因此下面这个式子就是：
+             * 8*new-rtt > 8 * min-rtt + min(16, max(4, min-rtt>>3))
+             * 两边都除以8,就跟论文中的式子一样了 */
 			if (ca->curr_rtt > ca->delay_min +
 			    HYSTART_DELAY_THRESH(ca->delay_min>>4))
 				ca->found |= HYSTART_DELAY;
@@ -417,6 +423,8 @@ static void bictcp_acked(struct sock *sk, u32 cnt, s32 rtt_us)
 	if ((s32)(tcp_time_stamp - ca->epoch_start) < HZ)
 		return;
 
+    /* rtt_us是一次RTT sample值，单位是us 
+     * delay的单位则是ms，而且左移了3位(这点与srtt的存储类似) */
 	delay = (rtt_us << 3) / USEC_PER_MSEC;
 	if (delay == 0)
 		delay = 1;
@@ -426,6 +434,7 @@ static void bictcp_acked(struct sock *sk, u32 cnt, s32 rtt_us)
 		ca->delay_min = delay;
 
 	/* hystart triggers when cwnd is larger than some threshold */
+    /* 如果启用了hystart,如果在慢启动阶段，且cwnd已经超过了启动hystart的下限，则启动hystart */
 	if (hystart && tp->snd_cwnd <= tp->snd_ssthresh &&
 	    tp->snd_cwnd >= hystart_low_window)
 		hystart_update(sk, delay);
