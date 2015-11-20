@@ -381,8 +381,8 @@ static void hystart_update(struct sock *sk, u32 delay)
 			ca->sample_cnt++;
 		} else {
             /* curr_rtt实际上存的是8*rtt,因此下面这个式子就是：
-             * 8*new-rtt > 8 * min-rtt + min(16, max(4, min-rtt>>3))
-             * 两边都除以8,就跟论文中的式子一样了 */
+             * 8*new-rtt > 8 * min-rtt + min(8*16, max(8*4, min-rtt/2))
+             * 两边都除以8,就跟论文中的式子差不多了，就是min和max从2,8变成了4,16 */
 			if (ca->curr_rtt > ca->delay_min +
 			    HYSTART_DELAY_THRESH(ca->delay_min>>4))
 				ca->found |= HYSTART_DELAY;
