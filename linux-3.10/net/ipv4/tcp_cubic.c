@@ -358,11 +358,14 @@ static void bictcp_state(struct sock *sk, u8 new_state)
 	}
 }
 
+/* 判断是否需要推出慢启动阶段的核心逻辑
+ * 如果判断出要退出慢启动，则将sstresh设置为cwnd即可 */
 static void hystart_update(struct sock *sk, u32 delay)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct bictcp *ca = inet_csk_ca(sk);
 
+    /* 如果没发现要退出慢启动的证据，在接着找证据 */
 	if (!(ca->found & hystart_detect)) {
 		u32 now = bictcp_clock();
 
@@ -374,6 +377,7 @@ static void hystart_update(struct sock *sk, u32 delay)
 		}
 
 		/* obtain the minimum delay of more than sampling packets */
+        /* 至少获得8个rtt采样后，才开始使用delay来判断 */
 		if (ca->sample_cnt < HYSTART_MIN_SAMPLES) {
 			if (ca->curr_rtt == 0 || ca->curr_rtt > delay)
 				ca->curr_rtt = delay;
@@ -383,6 +387,7 @@ static void hystart_update(struct sock *sk, u32 delay)
             /* curr_rtt实际上存的是8*rtt,因此下面这个式子就是：
              * 8*new-rtt > 8 * min-rtt + min(8*16, max(8*4, min-rtt/2))
              * 两边都除以8,就跟论文中的式子差不多了，就是min和max从2,8变成了4,16 */
+            /* 内在含义就是：rtt增大的太多了，该退出慢启动了 */
 			if (ca->curr_rtt > ca->delay_min +
 			    HYSTART_DELAY_THRESH(ca->delay_min>>4))
 				ca->found |= HYSTART_DELAY;
@@ -391,6 +396,7 @@ static void hystart_update(struct sock *sk, u32 delay)
 		 * Either one of two conditions are met,
 		 * we exit from slow start immediately.
 		 */
+        /* 将慢启动阈值调到cwnd，则之后就会退出慢启动过程，而进入拥塞避免阶段 */
 		if (ca->found & hystart_detect)
 			tp->snd_ssthresh = tp->snd_cwnd;
 	}
