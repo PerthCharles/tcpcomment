@@ -49,10 +49,12 @@ struct inet_timewait_death_row tcp_death_row = {
 };
 EXPORT_SYMBOL_GPL(tcp_death_row);
 
+/* 判断收到的数据序号[seq, end_seq]，是否在接收窗口[s_win, e_win]内 */ 
 static bool tcp_in_window(u32 seq, u32 end_seq, u32 s_win, u32 e_win)
 {
 	if (seq == s_win)
 		return true;
+    /* TODO: 这个地方的判断很不理解啊，可能会结合到之前已经对于seq的判断，之后系统的来理解 */
 	if (after(end_seq, s_win) && before(seq, e_win))
 		return true;
 	return seq == e_win && seq == end_seq;
@@ -499,7 +501,9 @@ EXPORT_SYMBOL(tcp_create_openreq_child);
  *
  * We don't need to initialize tmp_opt.sack_ok as we don't use the results
  */
-
+/* 正常逻辑过程：处于SYN_RECV状态的socket，处理三次握手的最后一个ACK
+ * 看完这个函数就会发现，tcp实现为了防攻击，对三次握手的最后一个ACK是检测的多么复杂 */
+/* TODO: 这个函数太复杂了，需要后续系统的总结这些判断是怎么做的 */
 struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 			   struct request_sock *req,
 			   struct request_sock **prev,
@@ -514,21 +518,31 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	BUG_ON(fastopen == (sk->sk_state == TCP_LISTEN));
 
 	tmp_opt.saw_tstamp = 0;
+    /* 如果doff比不带选项的TCP头部大，那么说明有需要被处理的选项 */
 	if (th->doff > (sizeof(struct tcphdr)>>2)) {
 		tcp_parse_options(skb, &tmp_opt, 0, NULL);
 
+        /* 如果对端开启了timestamp选项 */
 		if (tmp_opt.saw_tstamp) {
 			tmp_opt.ts_recent = req->ts_recent;
 			/* We do not store true stamp, but it is not required,
 			 * it can be estimated (approximately)
 			 * from another data.
 			 */
+            /* TODO：这个地方为什么要这么估计算出来？而不是直接记录当前时刻
+             * 而且这估计出来的时刻看着还考虑了synack的超时次数，也不是当前时刻 */
 			tmp_opt.ts_recent_stamp = get_seconds() - ((TCP_TIMEOUT_INIT/HZ)<<req->num_timeout);
+            /* 要通过PAWS机制检测一下，这个被处理的ACK包是否合法了
+             * 合法的内在含义就是timestamp值应该线性递增 */
 			paws_reject = tcp_paws_reject(&tmp_opt, th->rst);
 		}
 	}
 
 	/* Check for pure retransmitted SYN. */
+    /* 如何判断是一个重传的SYN呢？
+     * 1. 序号
+     * 2. SYN标记
+     * 3. PAWS合法性 */
 	if (TCP_SKB_CB(skb)->seq == tcp_rsk(req)->rcv_isn &&
 	    flg == TCP_FLAG_SYN &&
 	    !paws_reject) {
@@ -555,8 +569,12 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 		 * Reset timer after retransmitting SYNACK, similar to
 		 * the idea of fast retransmit in recovery.
 		 */
+        /* 如果收到对端重传的SYN，那么就立即重传一个SYN/ACK给对端 */
 		if (!inet_rtx_syn_ack(sk, req))
             /* req->num_timeout 记录的是synack包超时重传的次数 */
+            /* 注意两点：
+             *  1. 这里重传的syn/ack包并不会增加num_timeout，而是增加num_retrans
+             *  2. 设置syn/ack重传超时时间的是num_timeout，不是num_retrans */
 			req->expires = min(TCP_TIMEOUT_INIT << req->num_timeout,
 					   TCP_RTO_MAX) + jiffies;
 		return NULL;
@@ -619,6 +637,8 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	 * elsewhere and is checked directly against the child socket rather
 	 * than req because user data may have been sent out.
 	 */
+    /* 如果被检查的ACK包，所ACK的序号不正确，则返回传入的处于LISTEN状态的sk，
+     * TODO: 让这个处理LISTEN状态的母sk去做发送reset的动作? 可能是在tcp_rcv_state_process()中处理的 */
 	if ((flg & TCP_FLAG_ACK) && !fastopen &&
 	    (TCP_SKB_CB(skb)->ack_seq !=
 	     tcp_rsk(req)->snt_isn + 1))
@@ -631,10 +651,15 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 
 	/* RFC793: "first check sequence number". */
 
+    /* 1. 如果未通过PAWS检测，则返回NULL，最终让tcp_rcv_state_process() discard收到的这个包
+     * 2. 收到的数据包的序号不在窗口范围内，则返回NULL */
 	if (paws_reject || !tcp_in_window(TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq,
 					  tcp_rsk(req)->rcv_nxt, tcp_rsk(req)->rcv_nxt + req->rcv_wnd)) {
 		/* Out of window: send ACK and drop. */
+        /* 如果不带RST标记，则发送一个ACK给对端, 尽管这个数据包不在窗口内。
+         * TODO: 这种情况下，为什么要回一个ACK呢？不怕被攻击啊？还是想通过这个ACK来引起对端发送RESET？*/
 		if (!(flg & TCP_FLAG_RST))
+            /* 对应的函数：tcp_v4_reqsk_send_ack() */
 			req->rsk_ops->send_ack(sk, skb, req);
 		if (paws_reject)
 			NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_PAWSESTABREJECTED);
@@ -643,9 +668,14 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 
 	/* In sequence, PAWS is OK. */
 
+    /* 如果序号合法，则可以更新ts_recent了
+     * TODO： 为什么是seq <= rcv_nxt ? */
 	if (tmp_opt.saw_tstamp && !after(TCP_SKB_CB(skb)->seq, tcp_rsk(req)->rcv_nxt))
 		req->ts_recent = tmp_opt.rcv_tsval;
 
+    /* TODO:这个地方为什么要去掉SYN标记？
+     * 到这里，如果seq还等于rcv_isn，只能说明这个包的标记不仅仅是SYN
+     * 因为前面已经处理过(seq == rcv_isn && flg == SYN && !paws_reject)和 paws_reject的情况 */
 	if (TCP_SKB_CB(skb)->seq == tcp_rsk(req)->rcv_isn) {
 		/* Truncate SYN, it is out of window starting
 		   at tcp_rsk(req)->rcv_isn + 1. */
@@ -655,6 +685,8 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	/* RFC793: "second check the RST bit" and
 	 *	   "fourth, check the SYN bit"
 	 */
+    /* 1. 如果带RST，要reset这个连接
+     * 2. 如果到这里还有SYN标记(说明seq != rcv_isn)，那么也要reset */
 	if (flg & (TCP_FLAG_RST|TCP_FLAG_SYN)) {
 		TCP_INC_STATS_BH(sock_net(sk), TCP_MIB_ATTEMPTFAILS);
 		goto embryonic_reset;
@@ -666,12 +698,16 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	 * XXX (TFO) - if we ever allow "data after SYN", the
 	 * following check needs to be removed.
 	 */
+    /* 如果不带ACK，就返回NULL，让tcp_v4_do_rcv()去丢弃这个收到的包 */
 	if (!(flg & TCP_FLAG_ACK))
 		return NULL;
 
 	/* Got ACK for our SYNACK, so update baseline for SYNACK RTT sample. */
+    /* 如果双端都开启了timestamp，而且也看到了有效的tsecr值, 
+     * 则通过tsecr更新这个ACK对应的SYN/ACK包的发送时间 */
 	if (tmp_opt.saw_tstamp && tmp_opt.rcv_tsecr)
 		tcp_rsk(req)->snt_synack = tmp_opt.rcv_tsecr;
+    /* 如果没能通过timestamp更新，而且发生过重传，则不能准确统计rtt，故重置该变量 */
 	else if (req->num_retrans) /* don't take RTT sample if retrans && ~TS */
 		tcp_rsk(req)->snt_synack = 0;
 
@@ -697,7 +733,10 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	 * ESTABLISHED STATE. If it will be dropped after
 	 * socket is created, wait for troubles.
 	 */
+    /* 至此收到的ACK已经经过了重重检查了，该创建正式的socket了
+     * 具体处理函数tcp_v4_syn_recv_sock() */
 	child = inet_csk(sk)->icsk_af_ops->syn_recv_sock(sk, skb, req, NULL);
+    /* 如果无法创建正式的socket，则只能放弃丢弃这个ack包或者丢弃这条流了 */
 	if (child == NULL)
 		goto listen_overflow;
 
@@ -708,6 +747,8 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	return child;
 
 listen_overflow:
+    /* 如果没有开启abort_on_overflow，则标记曾经收到过3WHS的最后一个ACK，但是并不会丢弃这条流
+     * 如果开启了，则会丢弃这条流 */
 	if (!sysctl_tcp_abort_on_overflow) {
 		inet_rsk(req)->acked = 1;
 		return NULL;

@@ -3677,31 +3677,43 @@ void tcp_parse_options(const struct sk_buff *skb,
 {
 	const unsigned char *ptr;
 	const struct tcphdr *th = tcp_hdr(skb);
+    /* 获得选项部分的长度 */
 	int length = (th->doff * 4) - sizeof(struct tcphdr);
 
+    /* ptr指向选项部分的首字节 */
 	ptr = (const unsigned char *)(th + 1);
 	opt_rx->saw_tstamp = 0;
 
+    /* length在解析过程中，表示还有多少字节的option要被解析 */
 	while (length > 0) {
+        /* 先获option的类型 */
 		int opcode = *ptr++;
 		int opsize;
 
 		switch (opcode) {
-		case TCPOPT_EOL:
+		case TCPOPT_EOL:    /* 选项结束标记 */
 			return;
 		case TCPOPT_NOP:	/* Ref: RFC 793 section 3.1 */
+            /* pading的字节，跳过即可 */
 			length--;
 			continue;
 		default:
+            /* 再获取option的长度 */
 			opsize = *ptr++;
+            /* option类型加长度这两个域就至少2字节了，如果opsize小于2，
+             * 则说明肯定是不合法的选项, 进而放弃解析选项 */
 			if (opsize < 2) /* "silly options" */
 				return;
+            /* opsize超过剩余的length也肯定是非法的 */
 			if (opsize > length)
 				return;	/* don't parse partial options */
 			switch (opcode) {
-			case TCPOPT_MSS:
+			case TCPOPT_MSS:    
+                /* MSS大小的协商仅发生在：非established状态下收到的SYN包 */
 				if (opsize == TCPOLEN_MSS && th->syn && !estab) {
 					u16 in_mss = get_unaligned_be16(ptr);
+                    /* mss要取用户限制的值和option中指定值的较小值 */
+                    /* 在tcp_check_req()函数调用时未执行user_mss */
 					if (in_mss) {
 						if (opt_rx->user_mss &&
 						    opt_rx->user_mss < in_mss)
@@ -3710,11 +3722,15 @@ void tcp_parse_options(const struct sk_buff *skb,
 					}
 				}
 				break;
-			case TCPOPT_WINDOW:
+			case TCPOPT_WINDOW: 
+                /* window scaling 选项, 解析条件也必须带syn标记，非established状态
+                 * 同时系统还必须开了window_scaling选项 */
 				if (opsize == TCPOLEN_WINDOW && th->syn &&
 				    !estab && sysctl_tcp_window_scaling) {
 					__u8 snd_wscale = *(__u8 *)ptr;
 					opt_rx->wscale_ok = 1;
+                    /* window scale值最大是14，具体解释可参考RFC，
+                     * 简单的解释就是 th->window << win_scale 不宜超过th->seq能表示的范围 */
 					if (snd_wscale > 14) {
 						net_info_ratelimited("%s: Illegal window scaling value %d >14 received\n",
 								     __func__,
@@ -3724,12 +3740,20 @@ void tcp_parse_options(const struct sk_buff *skb,
 					opt_rx->snd_wscale = snd_wscale;
 				}
 				break;
-			case TCPOPT_TIMESTAMP:
+			case TCPOPT_TIMESTAMP:  
+                /* 解析timestamp选项
+                 * 解析的条件：
+                 * 1. 要么在SYN包中已经见过该选项，并且由于本地也开了timestamp选项，已经将tstamp_ok置为1了
+                 * 2. 要么是第一次见到该选项(收到第一个SYN包)，只有在本地也开了timestamp的情况下，
+                 *    才将saw_tstamp置1(进而会将tstamp_ok置1) */
 				if ((opsize == TCPOLEN_TIMESTAMP) &&
 				    ((estab && opt_rx->tstamp_ok) ||
 				     (!estab && sysctl_tcp_timestamps))) {
-					opt_rx->saw_tstamp = 1;
+					opt_rx->saw_tstamp = 1;     /* 表示在最近收到的对端发过来的包中看到"过"timestamp */
 					opt_rx->rcv_tsval = get_unaligned_be32(ptr);
+                    /* 一个完整的timestap选项，肯定带tsecr部分，但在SYN包中，由于它是第一个数据包，
+                     * 所以syn包中的tsecr值是0 
+                     * 因此解析一下也无妨 */
 					opt_rx->rcv_tsecr = get_unaligned_be32(ptr + 4);
 				}
 				break;
@@ -3749,7 +3773,7 @@ void tcp_parse_options(const struct sk_buff *skb,
 				if ((opsize >= (TCPOLEN_SACK_BASE + TCPOLEN_SACK_PERBLOCK)) &&
 				   !((opsize - TCPOLEN_SACK_BASE) % TCPOLEN_SACK_PERBLOCK) &&
 				   opt_rx->sack_ok) {
-                    /* 这里sacked被设置为了SACK option在TCP包中偏移
+                    /* 这里sacked被赋值为SACK option在TCP包中偏移
                      * 为后续直接找到SACK option进行解析提供方便 */
 					TCP_SKB_CB(skb)->sacked = (ptr - 2) - (unsigned char *)th;
 				}
@@ -3763,6 +3787,7 @@ void tcp_parse_options(const struct sk_buff *skb,
 				break;
 #endif
 			case TCPOPT_EXP:
+                /* 实验性的选项 */
 				/* Fast Open option shares code 254 using a
 				 * 16 bits magic number. It's valid only in
 				 * SYN or SYN-ACK with an even size.
@@ -3780,6 +3805,7 @@ void tcp_parse_options(const struct sk_buff *skb,
 				break;
 
 			}
+            /* 移动ptr，继续解析剩余的option */
 			ptr += opsize-2;
 			length -= opsize;
 		}

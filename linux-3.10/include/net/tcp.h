@@ -1148,11 +1148,19 @@ static inline int tcp_fin_time(const struct sock *sk)
 	return fin_timeout;
 }
 
+/* 基于timestamp的PAWS基本检测, 合法则返回true
+ * 检测的逻辑内在逻辑：
+ * 如果是按序发送的数据，后发送的timestamp值必须更大 */
 static inline bool tcp_paws_check(const struct tcp_options_received *rx_opt,
 				  int paws_win)
 {
+    /* ts_recent表示要echo回对端的最大的timestamp值，一般可以理解为"已经"按序到达的数据中最大的timestamp值
+     * 所以新收到的数据包的timestamp值必须比这个值大才合理 */
+    /* 如果被检查的数据包携带的timestamp值，比ts_recent大，则通过检测 */
 	if ((s32)(rx_opt->ts_recent - rx_opt->rcv_tsval) <= paws_win)
 		return true;
+
+    /* 如果tc_recent_stamp太过时了，说句已经不可信了，只好放弃PAWS检查，即默认通过检查 */
 	if (unlikely(get_seconds() >= rx_opt->ts_recent_stamp + TCP_PAWS_24DAYS))
 		return true;
 	/*
@@ -1165,9 +1173,11 @@ static inline bool tcp_paws_check(const struct tcp_options_received *rx_opt,
 	return false;
 }
 
+/* 判断一个收到的数据包是否通过PAWS检查，如果需要reject，则返回true */
 static inline bool tcp_paws_reject(const struct tcp_options_received *rx_opt,
 				   int rst)
 {
+    /* 判断是否通过基本的PAWS检测, 即timestamp必须是线性递增的 */
 	if (tcp_paws_check(rx_opt, 0))
 		return false;
 
@@ -1183,6 +1193,8 @@ static inline bool tcp_paws_reject(const struct tcp_options_received *rx_opt,
 
 	   However, we can relax time bounds for RST segments to MSL.
 	 */
+    /* TODO： 这个地方对于RST的处理内在含义还不太理解
+     * 根据RFC的说法，应该是只要带RST标记，就不应该检测PAWS的, 虽然上面有注释，但暂时还未理解 */
 	if (rst && get_seconds() >= rx_opt->ts_recent_stamp + TCP_PAWS_MSL)
 		return false;
 	return true;

@@ -813,6 +813,7 @@ static void tcp_v4_timewait_ack(struct sock *sk, struct sk_buff *skb)
 	inet_twsk_put(tw);
 }
 
+/* request sock发送ACK包，具体是调用tcp_v4_send_ack()来发送 */
 static void tcp_v4_reqsk_send_ack(struct sock *sk, struct sk_buff *skb,
 				  struct request_sock *req)
 {
@@ -1736,6 +1737,7 @@ put_and_exit:
 }
 EXPORT_SYMBOL(tcp_v4_syn_recv_sock);
 
+/* 这个函数处理处理LISTEN状态的socket收到的数据包 */
 static struct sock *tcp_v4_hnd_req(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcphdr *th = tcp_hdr(skb);
@@ -1743,27 +1745,49 @@ static struct sock *tcp_v4_hnd_req(struct sock *sk, struct sk_buff *skb)
 	struct sock *nsk;
 	struct request_sock **prev;
 	/* Find possible connection requests. */
+    /* 如果能找到request sock,则说明已经处理过三次握手的第一个SYN包，并在等待最后一个ACK包
+     * request sock如果已经创建，则服务器端的TCP状态就是SYN-RECV状态, 一般也叫半连接状态 */
 	struct request_sock *req = inet_csk_search_req(sk, &prev, th->source,
 						       iph->saddr, iph->daddr);
+    /* 如果在半连接队列中找到了，则处理3WHS最后一个ACK
+     * 最后一个参数false表示不是FastOpen */
 	if (req)
+        /* 严格的检测这个收到的ACK包，如果合法，则返回的是一个新创建的socket
+         * 如果选择丢弃这个ACK包，则返回NULL
+         * 如果要交给这个处理LISTEN的母socket处理，则返回sk */
 		return tcp_check_req(sk, skb, req, prev, false);
 
+    /* 在ESTABLISHED状态的hash表中查找 */
 	nsk = inet_lookup_established(sock_net(sk), &tcp_hashinfo, iph->saddr,
 			th->source, iph->daddr, th->dest, inet_iif(skb));
 
 	if (nsk) {
+        /* 如果找到了，且不处于TIME_WAIT状态，则返回被找到的处于ESTABLISHED状态的socket */
 		if (nsk->sk_state != TCP_TIME_WAIT) {
 			bh_lock_sock(nsk);
 			return nsk;
 		}
+        /* 如果处于TIME_WAIT状态，则释放tw结构体 */
+        /* TODO:具体是怎么是释放法的？*/
 		inet_twsk_put(inet_twsk(nsk));
+        /* 返回NULL则会导致被收到的包被discard,
+         * 理由：
+         *   如果之前建立的一条相同的流还处于TIME_WAIT状态，
+         *   那么就无法建立相同的流，只好把SYN包丢弃 */
 		return NULL;
 	}
 
+    /* 如果在半连接队里和连接hash表中都没有找到，
+     * 如果这个包还不带SYN标记，那只可能是触发了syncookies机制
+     * 这可能确实是三次握手的最后一个ACK包，但要通过cookie检查才能
+     * 通过建立socket */
 #ifdef CONFIG_SYN_COOKIES
 	if (!th->syn)
 		sk = cookie_v4_check(sk, skb, &(IPCB(skb)->opt));
 #endif
+    /* 如果是一个带SYN的包，并且半连接队列和连接hash表中都没有，
+     * 那么返回当前处于LISTEN状态的这个socket，
+     * 让LISTEN的socket去处理这个SYN包，开始执行正常的三次握手过程 */
 	return sk;
 }
 
@@ -1807,6 +1831,7 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 	 *  o We're expecting an MD5'd packet and this is no MD5 tcp option
 	 *  o There is an MD5 option and we're not expecting one
 	 */
+    /* 如果开了MD5功能，则检查MD5合法性，不合法就立马丢弃 */
 	if (tcp_v4_inbound_md5_hash(sk, skb))
 		goto discard;
 #endif
@@ -1822,6 +1847,7 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 				sk->sk_rx_dst = NULL;
 			}
 		}
+        /* established状态下，接收数据的处理流程 */
 		if (tcp_rcv_established(sk, skb, tcp_hdr(skb), skb->len)) {
 			rsk = sk;
 			goto reset;
@@ -1829,16 +1855,32 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 		return 0;
 	}
 
+    /* 检查报文长度、报文校验和 */
 	if (skb->len < tcp_hdrlen(skb) || tcp_checksum_complete(skb))
 		goto csum_err;
 
+    /* 如果处于监听LISTEN状态，则要处理SYN或ACK */
 	if (sk->sk_state == TCP_LISTEN) {
+        /* TODO-DONE: 该函数的具体含义是什么?
+         * nsk的具体含义是什么？
+         * nsk应该是new socket的意思
+         * tcp_v4_hnd_req()的功能：
+         * 1. 如果能找得到对应的半连接request socket
+         *      1.1 如果这个新收到的包是一个合法的3WHS的最后一个ACK包，则会创建一个新的socket返回，从而nsk != sk
+         *      1.2 如果数据包不合法，而且不要进步一的处理(比如回复一个reset), 则会返回NULL，进而会进入discard
+         *      1.3 如果数据包不合法，但还需要进一步的处理，则返回sk，让这个处于LISTEN状态的socket去处理
+         * 2. 如果能找到已经处于established状态的socket
+         *      2.1 这个socket处于TIME_WAIT状态，则返回NULL，进入discard路径丢弃这个包
+         *      2.2 如果处于其他状态，则返回这个找到的socket，进如nsk !=sh路径处理
+         * 3. 如果能通过syncookies建立socket，则返回cookie_v4_check()的返回结果
+         * 4. 其他情况，就会直接返回这个处于LISTEN状态的sk，让它进入tcp_rcv_state_process() 处理这个包 */
 		struct sock *nsk = tcp_v4_hnd_req(sk, skb);
 		if (!nsk)
 			goto discard;
 
 		if (nsk != sk) {
 			sock_rps_save_rxhash(nsk, skb);
+            /* TODO: 该函数的具体含义是什么？ */
 			if (tcp_child_process(sk, nsk, skb)) {
 				rsk = nsk;
 				goto reset;
@@ -1848,6 +1890,7 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 	} else
 		sock_rps_save_rxhash(sk, skb);
 
+    /* 处理除ESTABLISHED和TIME_WAIT之外所有的状态 */
 	if (tcp_rcv_state_process(sk, skb, tcp_hdr(skb), skb->len)) {
 		rsk = sk;
 		goto reset;
@@ -2003,7 +2046,8 @@ int tcp_v4_rcv(struct sk_buff *skb)
 	TCP_SKB_CB(skb)->ip_dsfield = ipv4_get_dsfield(iph);
 	TCP_SKB_CB(skb)->sacked	 = 0;   /* 初始化sacked标记 */
 
-    /* 找到skb属于哪个sock 结构体 */
+    /* 找到skb属于哪个sock 结构体
+     * 会优先找established的socket, 然后再找listen状态的socket */
 	sk = __inet_lookup_skb(&tcp_hashinfo, skb, th->source, th->dest);
 	if (!sk)
 		goto no_tcp_socket;

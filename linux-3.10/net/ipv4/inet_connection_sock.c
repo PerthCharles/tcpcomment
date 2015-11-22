@@ -581,6 +581,7 @@ static inline void syn_ack_recalc(struct request_sock *req, const int thresh,
 		  req->num_timeout >= rskq_defer_accept - 1;
 }
 
+/* 重传一个syn/ack包，冲床成功则num_retrans加1 */
 int inet_rtx_syn_ack(struct sock *parent, struct request_sock *req)
 {
 	int err = req->rsk_ops->rtx_syn_ack(parent, req);
