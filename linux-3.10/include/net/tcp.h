@@ -762,8 +762,8 @@ enum tcp_ca_event {
 /*
  * Interface for adding new TCP congestion control handlers
  */
-#define TCP_CA_NAME_MAX	16
-#define TCP_CA_MAX	128
+#define TCP_CA_NAME_MAX	16      /* 拥塞控制算法名字的最大长度 */
+#define TCP_CA_MAX	128         /* 最多能加载的拥塞控制算法个数 */
 #define TCP_CA_BUF_MAX	(TCP_CA_NAME_MAX*TCP_CA_MAX)
 
 #define TCP_CONG_NON_RESTRICTED 0x1
