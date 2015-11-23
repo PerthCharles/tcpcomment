@@ -31,6 +31,8 @@
 #define BICTCP_BETA_SCALE    1024	/* Scale factor beta calculation
 					 * max_cwnd = snd_cwnd * beta
 					 */
+/* 本来应该是jiffies/HZ,单位为秒。但秒粒度太大，影响计算精确度。
+ * 所以计算式先把时间放大2^10倍 */
 #define	BICTCP_HZ		10	/* BIC HZ 2^10 = 1024 */
 
 /* Two methods of hybrid slow start */
@@ -86,7 +88,7 @@ MODULE_PARM_DESC(hystart_ack_delta, "spacing between ack's indicating train (mse
 
 /* BIC TCP Parameters */
 struct bictcp {
-	u32	cnt;		/* increase cwnd by 1 after ACKs */
+	u32	cnt;		/* increase cwnd by 1 after ACKs */ /* 用于控制snd_cwnd的增长速度 */
 	u32 	last_max_cwnd;	/* last maximum snd_cwnd */
 	u32	loss_cwnd;	/* congestion window at last loss */
 	u32	last_cwnd;	/* the last snd_cwnd */
@@ -155,6 +157,7 @@ static void bictcp_init(struct sock *sk)
 	if (hystart)
 		bictcp_hystart_reset(sk);
 
+    /* 如果没有开启hystart, 同时在加载CUBIC模块时有指定了ssthresh */
 	if (!hystart && initial_ssthresh)
 		tcp_sk(sk)->snd_ssthresh = initial_ssthresh;
 }
@@ -210,13 +213,39 @@ static u32 cubic_root(u64 a)
 /*
  * Compute congestion window to use.
  */
+/* cubic算法的核心逻辑
+ * cubic计算cwnd的基本公式：
+ *      W_cubic = C * (t - K)^3 + W_max     (1)
+ *  其中，C是乘法因子，t是距离上一次cwnd reduction的时间，W_max是上一次cwnd_reduction时的cwnd值
+ *      K = cubic_root[(W_max*beta) / C], 其中beta是cwnd的进入快速重传时的下降因子
+ *
+ *  而K的值是根据初始的W_cubic和W_max值，在刚进入拥塞避免时(t=0)计算得到的, 进而由公式(1)可得：
+ *      K = cubic_root[(W_cubic - W_max)/C]
+ *
+ *  结合代码实现，以上参数在实现中分别对应如下
+ *  calculate the "K" for (wmax-cwnd) = c/rtt * K^3
+ *       *  so K = cubic_root( (wmax-cwnd)*rtt/c )
+ *
+ *      C = bic_scale >> 10 约为0.04
+ *          1. 但由于t和K为了精度都放大了(2^BICTCP_HZ)倍，所以C应该缩小(2^BICTCP_HZ)^3倍，即2^30倍
+ *             故实现中参与计算的C = (41 >> 10)/(2^30) = 41 / 2^40
+ *          2. 实现中利用的公式其实还考虑了RTT，具体用的公式为： W_cubic = (C/rtt) * (t - K)^3 + W_max
+ *             而实现中默认使用的rtt为100ms，化为秒的话，C还应该乘以10，即变量cube_rtt_scale
+ *             故真实参与计算bic_K的C值为 (41 * 10) / 2^40 ，即cube_factor
+ *
+ *      W_max的变量名称为：bic_origin_point，含义就是y=x^3坐标系原点的cwnd值
+ *      beta = 717/1024 约为 0.7
+ *      K的变量名称为bic_K，表示y=x^3函数曲线在坐标系中向右平移了bic_K个时间单位  */
 static inline void bictcp_update(struct bictcp *ca, u32 cwnd)
 {
 	u64 offs;
+    /* delta是cwnd差， bic_target是预期的cwnd值，t为预测时间 */
 	u32 delta, t, bic_target, max_cnt;
 
 	ca->ack_cnt++;	/* count the number of ACKs */
 
+    /* 与bic一样，如果31.25ms内，cwnd都没有增长，则直接返回 
+     * TODO: 目的是给足够的时间，让snd_cwnd_cnt增长到ca->cnt，从而使cwnd符合算法预期的进行增长? */
 	if (ca->last_cwnd == cwnd &&
 	    (s32)(tcp_time_stamp - ca->last_time) <= HZ / 32)
 		return;
@@ -224,18 +253,27 @@ static inline void bictcp_update(struct bictcp *ca, u32 cwnd)
 	ca->last_cwnd = cwnd;
 	ca->last_time = tcp_time_stamp;
 
+    /* 开始一个全新的epoch，epoch的理解如下
+     * 1. 当发生丢包要进入快速重传，则结束epoch
+     * 2. 当进入loss阶段后，会重置epoch_start，结束epoch
+     * -- 综上，epoch可以理解为一段连续的拥塞避免阶段, 期间未发生丢包 */
 	if (ca->epoch_start == 0) {
 		ca->epoch_start = tcp_time_stamp;	/* record the beginning of an epoch */
 		ca->ack_cnt = 1;			/* start counting */
-		ca->tcp_cwnd = cwnd;			/* syn with cubic */
+		ca->tcp_cwnd = cwnd;			/* syn with cubic */    /* 将ca->tcp_cwnd与实际作用的cwnd进行同步 */
 
+        /* 取max(last_max_cwnd, cwnd)作为当前的Wmax, 在CUBIC中叫bic_origin_point
+         * 可以理解为y=x^3这个函数所在坐标系的原点的cwnd值, 要注意这个origin_point只会在开始一个新的epoch才会设置 */
 		if (ca->last_max_cwnd <= cwnd) {
-			ca->bic_K = 0;
+            /* 由于origin point设置为当前cwnd，所以预期的cwn变化曲线y=x^3不需要在坐标系中的进行平移 */
+			ca->bic_K = 0;      
 			ca->bic_origin_point = cwnd;
 		} else {
 			/* Compute new K based on
 			 * (wmax-cwnd) * (srtt>>3 / HZ) / c * 2^(3*bictcp_HZ)
 			 */
+            /* cube_factor在注册cubic算法的时候，计算的值是: cube_factor = 2^40 / (41 * 10)
+             * 至于cube_factor为什么是这个值，请查看函数开始部分的注释 */
 			ca->bic_K = cubic_root(cube_factor
 					       * (ca->last_max_cwnd - cwnd));
 			ca->bic_origin_point = ca->last_max_cwnd;
@@ -257,14 +295,17 @@ static inline void bictcp_update(struct bictcp *ca, u32 cwnd)
 	 */
 
 	/* change the unit from HZ to bictcp_HZ */
+    /* 计算当前时间与epoch开始的时间差，即论文公式中的t */
 	t = ((tcp_time_stamp + msecs_to_jiffies(ca->delay_min>>3)
 	      - ca->epoch_start) << BICTCP_HZ) / HZ;
 
+    /* 计算 | t - K | */
 	if (t < ca->bic_K)		/* t - K */
 		offs = ca->bic_K - t;
 	else
 		offs = t - ca->bic_K;
 
+    /* 计算cubic算法预期调整到的cwnd值：bic_target */
 	/* c/rtt * (t-K)^3 */
 	delta = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
 	if (t < ca->bic_K)                                	/* below origin*/
@@ -274,8 +315,9 @@ static inline void bictcp_update(struct bictcp *ca, u32 cwnd)
 
 	/* cubic function - calc bictcp_cnt*/
 	if (bic_target > cwnd) {
-		ca->cnt = cwnd / (bic_target - cwnd);
+		ca->cnt = cwnd / (bic_target - cwnd);   /* 设置ca->cnt，使得一个RTT内，cwnd增长 (bic_target - cwnd) */
 	} else {
+        /* 如果cwnd已经超于预期了，则应该降速，即100RTT才增加1个单位  -- 基本上等于保持不变 */
 		ca->cnt = 100 * cwnd;              /* very small increment*/
 	}
 
@@ -283,18 +325,28 @@ static inline void bictcp_update(struct bictcp *ca, u32 cwnd)
 	 * The initial growth of cubic function may be too conservative
 	 * when the available bandwidth is still unknown.
 	 */
+    /* 如果有慢启动，然后计入拥塞避免，last_max_cwnd是没有设置的，此时可能还没有充分利用带宽
+     * (比如ssthresh错误的配置,或hystart过早的触发了)
+     * 此时为了保障能尽快的利用满带宽，设置cwnd的最小增速为 5% per RTT */
 	if (ca->last_max_cwnd == 0 && ca->cnt > 20)
 		ca->cnt = 20;	/* increase cwnd 5% per RTT */
 
 	/* TCP Friendly */
+    /* 默认开启 */
 	if (tcp_friendliness) {
 		u32 scale = beta_scale;
+        /* 有beta_scale的计算公式，可得delta的公式为：
+         * {(BICTCP_BETA_SCALE + beta) / [3 * (BICTCP_BETA_SCALE - beta)]} * cwnd
+         */
+        /* 至于delta为什么是这个值，可以看cubic的论文，它给出的一个理论结论就是：
+         *      the TCP-fair additive increment would be 3(1-beta)/(1+beta) per RTT
+         * 那么如果要与它产生一致的效果，ack_cnt应该等于 cwnd / [3(1-beta)/(1+beta)], 变换一下就是delta的式子 */
 		delta = (cwnd * scale) >> 3;
 		while (ca->ack_cnt > delta) {		/* update tcp cwnd */
 			ca->ack_cnt -= delta;
 			ca->tcp_cwnd++;
 		}
-
+        /* 如果cubic的cwnd比reno的还慢，则要提高速度了cwnd的速度了 */
 		if (ca->tcp_cwnd > cwnd){	/* if bic is slower than tcp */
 			delta = ca->tcp_cwnd - cwnd;
 			max_cnt = cwnd / delta;
@@ -303,11 +355,13 @@ static inline void bictcp_update(struct bictcp *ca, u32 cwnd)
 		}
 	}
 
+    /* 考虑delay ack：比如接收方是收两个数据包发送一个ACK，那么ca->cnt则还要除以2才能match好 */
 	ca->cnt = (ca->cnt << ACK_RATIO_SHIFT) / ca->delayed_ack;
 	if (ca->cnt == 0)			/* cannot be zero */
 		ca->cnt = 1;
 }
 
+/* cubic拥塞算法的主逻辑 */
 static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -317,6 +371,7 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		return;
 
 	if (tp->snd_cwnd <= tp->snd_ssthresh) {
+        /* 一个RTT结束，开启一个新的RTT时 重传设置hystart中的变量 */
 		if (hystart && after(ack, ca->end_seq))
 			bictcp_hystart_reset(sk);
 		tcp_slow_start(tp);
@@ -341,7 +396,7 @@ static u32 bictcp_recalc_ssthresh(struct sock *sk)
 	else
 		ca->last_max_cwnd = tp->snd_cwnd;
 
-	ca->loss_cwnd = tp->snd_cwnd;
+	ca->loss_cwnd = tp->snd_cwnd;   /* 要进入重传，则设置loss_cwnd记录刚要进入重传阶段是的cwnd，本质是用于undo时恢复cwnd */
 
 	return max((tp->snd_cwnd * beta) / BICTCP_BETA_SCALE, 2U);
 }
@@ -433,6 +488,7 @@ static void bictcp_acked(struct sock *sk, u32 cnt, s32 rtt_us)
 		return;
 
 	/* Discard delay samples right after fast recovery */
+    /* 快速恢复的1s内不进行采样 */
 	if ((s32)(tcp_time_stamp - ca->epoch_start) < HZ)
 		return;
 
@@ -467,14 +523,17 @@ static struct tcp_congestion_ops cubictcp __read_mostly = {
 
 static int __init cubictcp_register(void)
 {
+    /* 拥塞控制算法使用的参数不能太多，不得超过struct inet_connection_sock 中预留的长度 */
 	BUILD_BUG_ON(sizeof(struct bictcp) > ICSK_CA_PRIV_SIZE);
 
 	/* Precompute a bunch of the scaling factors that are used per-packet
 	 * based on SRTT of 100ms
 	 */
 
+    /* 默认值: beta_scale = 15 */
 	beta_scale = 8*(BICTCP_BETA_SCALE+beta)/ 3 / (BICTCP_BETA_SCALE - beta);
 
+    /* 默认值： 410 */
 	cube_rtt_scale = (bic_scale * 10);	/* 1024*c/rtt */
 
 	/* calculate the "K" for (wmax-cwnd) = c/rtt * K^3
@@ -482,6 +541,7 @@ static int __init cubictcp_register(void)
 	 * the unit of K is bictcp_HZ=2^10, not HZ
 	 *
 	 *  c = bic_scale >> 10
+	 *  c = 41 >> 10 约为0.04
 	 *  rtt = 100ms
 	 *
 	 * the following code has been designed and tested for
@@ -494,6 +554,8 @@ static int __init cubictcp_register(void)
 	cube_factor = 1ull << (10+3*BICTCP_HZ); /* 2^40 */
 
 	/* divide by bic_scale and by constant Srtt (100ms) */
+    /* do_div(x, y)的效果是将x/y的结果存入x中，x%y的结果作为返回值 */
+    /* cube_factor = 2^40 / (41 * 10) */
 	do_div(cube_factor, bic_scale * 10);
 
 	/* hystart needs ms clock resolution */

@@ -88,7 +88,7 @@ static void bictcp_init(struct sock *sk)
 static inline void bictcp_update(struct bictcp *ca, u32 cwnd)
 {
     /* last_cwnd表示上一次更新的cwnd值，last_time表示上一次更新的时间
-     * 如果间隔太短，则不更新BIC结构体，也就不会更新cwnd
+     * 如果间隔太短，cwnd也还没增长，则不更新BIC结构体，也就不会更新cwnd
      * 时间间隔是HZ/32, 即31.25ms 
      * TODO: 这个经验值是怎么来的？ */
 	if (ca->last_cwnd == cwnd &&
