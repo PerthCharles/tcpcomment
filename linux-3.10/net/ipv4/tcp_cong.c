@@ -361,7 +361,7 @@ EXPORT_SYMBOL_GPL(tcp_slow_start);
  * 从而就是每收到一个ACK，cwnd增长1/cwnd，*/
 void tcp_cong_avoid_ai(struct tcp_sock *tp, u32 w)
 {
-    /* w一般传入的就是snd_cwnd */
+    /* w一般传入的就是snd_cwnd，在BIC、CUBIC中是算法计算出来的增长量 */
 	if (tp->snd_cwnd_cnt >= w) {
 		if (tp->snd_cwnd < tp->snd_cwnd_clamp)
 			tp->snd_cwnd++;
