@@ -926,6 +926,7 @@ static inline bool tcp_in_cwnd_reduction(const struct sock *sk)
  * The exception is cwnd reduction phase, when cwnd is decreasing towards
  * ssthresh.
  */
+/* 如果不在cwnd reduction阶段，则将ssthresh设置当前cwnd的0.75倍 */
 static inline __u32 tcp_current_ssthresh(const struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);

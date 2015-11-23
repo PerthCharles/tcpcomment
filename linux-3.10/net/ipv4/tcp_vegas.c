@@ -77,6 +77,7 @@ static void vegas_enable(struct sock *sk)
 	vegas->doing_vegas_now = 1;
 
 	/* Set the beginning of the next send window. */
+    /* 记录滑动窗口的右边界 */
 	vegas->beg_snd_nxt = tp->snd_nxt;
 
 	vegas->cntRTT = 0;
@@ -95,6 +96,8 @@ void tcp_vegas_init(struct sock *sk)
 {
 	struct vegas *vegas = inet_csk_ca(sk);
 
+    /* baseRTT是记录整条流期间，最小的rtt sample
+     * 但如果是idle之后的继续发送，也是需要重设baseRTT的，毕竟时间过去太久了 */
 	vegas->baseRTT = 0x7fffffff;
 	vegas_enable(sk);
 }
@@ -120,12 +123,14 @@ void tcp_vegas_pkts_acked(struct sock *sk, u32 cnt, s32 rtt_us)
 	vrtt = rtt_us + 1;
 
 	/* Filter to find propagation delay: */
+    /* 更新baseRTT */
 	if (vrtt < vegas->baseRTT)
 		vegas->baseRTT = vrtt;
 
 	/* Find the min RTT during the last RTT to find
 	 * the current prop. delay + queuing delay:
 	 */
+    /* minRTT记录的是上一个RTT时间区间内，获取的最小的rtt采样 */
 	vegas->minRTT = min(vegas->minRTT, vrtt);
 	vegas->cntRTT++;
 }
@@ -134,8 +139,10 @@ EXPORT_SYMBOL_GPL(tcp_vegas_pkts_acked);
 void tcp_vegas_state(struct sock *sk, u8 ca_state)
 {
 
+    /* 当状态变为open时，开始使用vegas */
 	if (ca_state == TCP_CA_Open)
 		vegas_enable(sk);
+    /* 当状态不是open时，禁用vegas */
 	else
 		vegas_disable(sk);
 }
@@ -158,27 +165,35 @@ void tcp_vegas_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 }
 EXPORT_SYMBOL_GPL(tcp_vegas_cwnd_event);
 
+/* vegas内部的在降低cwnd的时候，会将ssthreh设置为min(ssthresh, snd_cwnd - 1)
+ * vegas算法在遇到丢包时设置ssthresh的函数是于Reno一样的tcp_reno_ssthresh() */
 static inline u32 tcp_vegas_ssthresh(struct tcp_sock *tp)
 {
 	return  min(tp->snd_ssthresh, tp->snd_cwnd-1);
 }
 
+/* vegas算法的核心逻辑 */
 static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct vegas *vegas = inet_csk_ca(sk);
 
+    /* 如果此时禁用了vegas，则使用Reno算法进行拥塞控制 */
 	if (!vegas->doing_vegas_now) {
 		tcp_reno_cong_avoid(sk, ack, in_flight);
 		return;
 	}
 
+    /* vegas的策略是在一个窗口内，仅调整一次cwnd
+     * 具体如何判断是否在同一个窗口内，
+     * 就是通过ack号是否超过上一个周期刚开始时的右边界(snd_nxt) */
 	if (after(ack, vegas->beg_snd_nxt)) {
 		/* Do the Vegas once-per-RTT cwnd adjustment. */
 
 		/* Save the extent of the current window so we can use this
 		 * at the end of the next RTT.
 		 */
+        /* 记录一个周期开始时的右边界 */
 		vegas->beg_snd_nxt  = tp->snd_nxt;
 
 		/* We do the Vegas calculations only if we got enough RTT
@@ -189,7 +204,7 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		 * means they're almost certainly delayed ACKs.
 		 * If  we have 3 samples, we should be OK.
 		 */
-
+        /* 只有进行了足够的rtt采样后，才能真正使用vegas算法 */
 		if (vegas->cntRTT <= 2) {
 			/* We don't have enough RTT samples to do the Vegas
 			 * calculation, so we'll behave like Reno.
@@ -224,6 +239,12 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 			 * and the window we would like to have. This quantity
 			 * is the "Diff" from the Arizona Vegas papers.
 			 */
+            /* rtt - vegas->baseRTT相当于是数据包经历的排队时延
+             * 而cwnd/rtt是实际的传输速率，可理解为瓶颈链路的带宽
+             * 因此diff 应该等于 cwnd * (rtt - basertt) / rtt
+             * 所以我一直不理解为什么vegas的实现是使用的basertt做分母，
+             * 而不是rtt
+             * TODO: 问一问社区，为什么选用baseRTT做分母 */
 			diff = tp->snd_cwnd * (rtt-vegas->baseRTT) / vegas->baseRTT;
 
 			if (diff > gamma && tp->snd_cwnd <= tp->snd_ssthresh) {
@@ -238,10 +259,14 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 				 * truncation robs us of full link
 				 * utilization.
 				 */
+                /* 如果diff比1大，并且还处于慢启动阶段，则已经涨的太快了，要降速
+                 * 1. cwnd降低为target_cwnd+1
+                 * 2. ssthresh设置为cwnd-1,即target_cwnd，从而退出慢启动阶段 */
 				tp->snd_cwnd = min(tp->snd_cwnd, (u32)target_cwnd+1);
 				tp->snd_ssthresh = tcp_vegas_ssthresh(tp);
 
 			} else if (tp->snd_cwnd <= tp->snd_ssthresh) {
+                /* 如果链路并没有出现排队，则继续进行慢启动 */
 				/* Slow start.  */
 				tcp_slow_start(tp);
 			} else {
@@ -254,40 +279,50 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 					/* The old window was too fast, so
 					 * we slow down.
 					 */
+                    /* 如果排队长度超过beta，则应该降速，从而会将cwnd减1 */
 					tp->snd_cwnd--;
+                    /* 可以发现，vegas中如果选择降低cwnd，都会重设ssthresh */
 					tp->snd_ssthresh
 						= tcp_vegas_ssthresh(tp);
 				} else if (diff < alpha) {
 					/* We don't have enough extra packets
 					 * in the network, so speed up.
 					 */
+                    /* 如果排队长度比较小，则应该提速，从而会将cwnd加1 */
 					tp->snd_cwnd++;
 				} else {
+                    /* 判断长度符合预期，则不需要调整发送速度，即不调整cwnd */
 					/* Sending just as fast as we
 					 * should be.
 					 */
 				}
 			}
 
+            /* 避免cwnd过小或过大 */
 			if (tp->snd_cwnd < 2)
 				tp->snd_cwnd = 2;
 			else if (tp->snd_cwnd > tp->snd_cwnd_clamp)
 				tp->snd_cwnd = tp->snd_cwnd_clamp;
 
+            /* 将慢启动阈值设置为当前cwnd的0.75倍 */
 			tp->snd_ssthresh = tcp_current_ssthresh(sk);
 		}
 
 		/* Wipe the slate clean for the next RTT. */
+        /* 在一个新的RTT窗口开始时，将cntRTT和minRTT重置 */
 		vegas->cntRTT = 0;
 		vegas->minRTT = 0x7fffffff;
 	}
 	/* Use normal slow start */
+    /* 如果在同一个RTT窗口内
+     * 1. cwnd比ssthresh小，则执行慢启动
+     * 2. 否则仅通过前面的vegas算法调整cwnd，在同一个RTT窗口内则不改变cwnd */
 	else if (tp->snd_cwnd <= tp->snd_ssthresh)
 		tcp_slow_start(tp);
-
 }
 
 /* Extract info for Tcp socket info provided via netlink. */
+/* 通过netlink获取使用vegas算法时的相关信息 */
 void tcp_vegas_get_info(struct sock *sk, u32 ext, struct sk_buff *skb)
 {
 	const struct vegas *ca = inet_csk_ca(sk);
