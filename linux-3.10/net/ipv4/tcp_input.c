@@ -5850,7 +5850,7 @@ reset_and_undo:
  *	It's called from both tcp_v4_rcv and tcp_v6_rcv and should be
  *	address independent.
  */
-
+/* 返回大于零的数，表示要发送reset */
 int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 			  const struct tcphdr *th, unsigned int len)
 {
@@ -5862,19 +5862,28 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 	tp->rx_opt.saw_tstamp = 0;
 
 	switch (sk->sk_state) {
-	case TCP_CLOSE:
+	case TCP_CLOSE:     /* 如果已经处于CLOSE状态，只好丢弃收到的包 */
 		goto discard;
 
 	case TCP_LISTEN:
-		if (th->ack)
+        /* 如果处于LISTEN状态的socket，收到一个ACK，则返回1，让sk去回复一个reset包给对端
+         * 注意：如果是合法的ACK，比如3WHS的最后一个ACK包，应该已经在tcp_v4_hnd_req()中处理好了
+         *       传递到这里来的数据包应该只有SYN包才合法 */
+		if (th->ack)    
 			return 1;
 
+        /* 处于LISTEN状态的socket，应该忽视对端发过来的reset包 */
 		if (th->rst)
 			goto discard;
 
 		if (th->syn) {
+            /* 如果SYN包里面，又带有FIN标记，则肯定是个非法的数据包，直接丢弃 */
 			if (th->fin)
 				goto discard;
+
+            /* 调用tcp_v4_conn_request()来处理三次握手的第一个数据包
+             * 有意思的是tcp_v4_conn_request()只会返回0，不需要发送reset给对端
+             * 返回0，进入下面的kfree_skb(skb)步骤，所以tcp_v4_conn_request也并不需要负责释放skb */
 			if (icsk->icsk_af_ops->conn_request(sk, skb) < 0)
 				return 1;
 
@@ -5895,9 +5904,11 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 			 * in the interest of security over speed unless
 			 * it's still in use.
 			 */
+            /* 注释解释的挺清楚的，目前Linux不会处理SYN包中携带的数据 */
 			kfree_skb(skb);
-			return 0;
+			return 0;   /* 返回0表示正常结束 */
 		}
+        /* 如果不带SYN标记，则是一个非法的数据包，直接丢弃掉 */
 		goto discard;
 
 	case TCP_SYN_SENT:

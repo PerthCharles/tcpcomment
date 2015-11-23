@@ -102,6 +102,7 @@ __u32 secure_ipv6_id(const __be32 daddr[4])
 	return hash[0];
 }
 
+/* 返回一个ISN值, 看着像使用MD5进行随机的 */
 __u32 secure_tcp_sequence_number(__be32 saddr, __be32 daddr,
 				 __be16 sport, __be16 dport)
 {

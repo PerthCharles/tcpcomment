@@ -228,6 +228,7 @@ static inline int inet_sk_ehashfn(const struct sock *sk)
 	return inet_ehashfn(net, laddr, lport, faddr, fport);
 }
 
+/* 分配request_sock结构体实例 */
 static inline struct request_sock *inet_reqsk_alloc(struct request_sock_ops *ops)
 {
 	struct request_sock *req = reqsk_alloc(ops);

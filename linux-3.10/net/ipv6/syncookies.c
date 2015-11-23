@@ -83,6 +83,8 @@ static u32 cookie_hash(const struct in6_addr *saddr, const struct in6_addr *dadd
 	return tmp[17];
 }
 
+/* 利用两个ip地址，两个port，对端的ISN，当前的时间和mssind(mss index的意思)来计算得到一个cookier值 */
+/* TODO: 研究一下具体怎么算的 */
 static __u32 secure_tcp_syn_cookie(const struct in6_addr *saddr,
 				   const struct in6_addr *daddr,
 				   __be16 sport, __be16 dport, __u32 sseq,

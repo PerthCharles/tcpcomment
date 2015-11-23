@@ -64,10 +64,12 @@ struct request_sock {
 	u32				peer_secid;
 };
 
+/* 分配一个request_sock结构体，分配不成功则返回NULL */
 static inline struct request_sock *reqsk_alloc(const struct request_sock_ops *ops)
 {
 	struct request_sock *req = kmem_cache_alloc(ops->slab, GFP_ATOMIC);
 
+    /* 设置request socket的相关处理函数 */
 	if (req != NULL)
 		req->rsk_ops = ops;
 

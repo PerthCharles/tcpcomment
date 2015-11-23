@@ -98,8 +98,10 @@ static int tcp_v4_md5_hash_hdr(char *md5_hash, const struct tcp_md5sig_key *key,
 struct inet_hashinfo tcp_hashinfo;
 EXPORT_SYMBOL(tcp_hashinfo);
 
+/* 初始化一个正常(不是作为syncookie用途)的ISN值 */
 static inline __u32 tcp_v4_init_sequence(const struct sk_buff *skb)
 {
+    /* ISN值也是需要求hash，才产生的，这是出于安全考虑，避免使用固定的ISN值或直接与系统时间关联的ISN值 */
 	return secure_tcp_sequence_number(ip_hdr(skb)->daddr,
 					  ip_hdr(skb)->saddr,
 					  tcp_hdr(skb)->dest,
@@ -545,6 +547,7 @@ out:
 	sock_put(sk);
 }
 
+/* 计算checksum */
 static void __tcp_v4_send_check(struct sk_buff *skb,
 				__be32 saddr, __be32 daddr)
 {
@@ -892,12 +895,14 @@ bool tcp_syn_flood_action(struct sock *sk,
 			 const struct sk_buff *skb,
 			 const char *proto)
 {
+    /* 如果不开启syncookie功能，则默认的动作就是drop request */
 	const char *msg = "Dropping request";
-	bool want_cookie = false;
+	bool want_cookie = false;   
 	struct listen_sock *lopt;
 
 
 
+    /* 如果开启了syncookies功能，则返回want_cookies==true，启用syncookie功能 */
 #ifdef CONFIG_SYN_COOKIES
 	if (sysctl_tcp_syncookies) {
 		msg = "Sending cookies";
@@ -908,6 +913,7 @@ bool tcp_syn_flood_action(struct sock *sk,
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPREQQFULLDROP);
 
 	lopt = inet_csk(sk)->icsk_accept_queue.listen_opt;
+    /* 打印警告信息 */
 	if (!lopt->synflood_warned) {
 		lopt->synflood_warned = 1;
 		pr_info("%s: Possible SYN flooding on port %d. %s.  Check SNMP counters.\n",
@@ -1269,10 +1275,11 @@ static bool tcp_v4_inbound_md5_hash(struct sock *sk, const struct sk_buff *skb)
 
 #endif
 
+/* ipv4的TCP流，处于半连接状态的socket的相关处理函数 */
 struct request_sock_ops tcp_request_sock_ops __read_mostly = {
 	.family		=	PF_INET,
 	.obj_size	=	sizeof(struct tcp_request_sock),
-	.rtx_syn_ack	=	tcp_v4_rtx_synack,
+	.rtx_syn_ack	=	tcp_v4_rtx_synack,      /* 重传syn/ack包的处理函数 */
 	.send_ack	=	tcp_v4_reqsk_send_ack,
 	.destructor	=	tcp_v4_reqsk_destructor,
 	.send_reset	=	tcp_v4_send_reset,
@@ -1463,6 +1470,7 @@ static int tcp_v4_conn_req_fastopen(struct sock *sk,
 	return 0;
 }
 
+/* 处于LISTEN状态的sk，处理收到的一个SYN包 */
 int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_options_received tmp_opt;
@@ -1470,9 +1478,9 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	struct inet_request_sock *ireq;
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct dst_entry *dst = NULL;
-	__be32 saddr = ip_hdr(skb)->saddr;
-	__be32 daddr = ip_hdr(skb)->daddr;
-	__u32 isn = TCP_SKB_CB(skb)->when;
+	__be32 saddr = ip_hdr(skb)->saddr;  /* skb的源地址，即这个skb来自谁 */
+	__be32 daddr = ip_hdr(skb)->daddr;  /* skb的目的地址，即这个skb是发给谁的 */
+	__u32 isn = TCP_SKB_CB(skb)->when;  /* 此时when已经在tcp_v4_rcv中设置为0了 */
 	bool want_cookie = false;
 	struct flowi4 fl4;
 	struct tcp_fastopen_cookie foc = { .len = -1 };
@@ -1481,6 +1489,7 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	int do_fastopen;
 
 	/* Never answer to SYNs send to broadcast or multicast */
+    /* 忽略广播、多播的SYN段 */
 	if (skb_rtable(skb)->rt_flags & (RTCF_BROADCAST | RTCF_MULTICAST))
 		goto drop;
 
@@ -1488,8 +1497,13 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	 * limitations, they conserve resources and peer is
 	 * evidently real one.
 	 */
+    /* 如果半链接队列满了，并且
+     * TCP_SKB_CB(skb)->when变量为0(TODO: 目前的理解这个值一定是0)
+     * 则尝试要不要触发syncookies机制 */
 	if (inet_csk_reqsk_queue_is_full(sk) && !isn) {
+        /* 判断内核是否支持syncookie */
 		want_cookie = tcp_syn_flood_action(sk, skb, "TCP");
+        /* 如果不支持syncookie，则直接丢弃这个request */
 		if (!want_cookie)
 			goto drop;
 	}
@@ -1499,11 +1513,17 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	 * clogging syn queue with openreqs with exponentially increasing
 	 * timeout.
 	 */
+    /* 如果连接队列(即已经完成三次握手，就等server端执行accept()正式创建TCP流了)已经占满,
+     *  并且有未重传过的半连接，则丢弃这个SYN请求
+     *  TODO: queue_young的内在含义是什么？ 为什么还要判断这个？*/
 	if (sk_acceptq_is_full(sk) && inet_csk_reqsk_queue_young(sk) > 1) {
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_LISTENOVERFLOWS);
 		goto drop;
 	}
 
+    /* 这里参数是tcp_request_sock_ops实例，它的类型是struct request_sock_ops
+     * 这个实例在本文件中初始化的，可以自行前往查看
+     * 要与在使用MD5SIG时，内核定义的struct tcp_request_sock_ops区分开 */
 	req = inet_reqsk_alloc(&tcp_request_sock_ops);
 	if (!req)
 		goto drop;
@@ -1512,33 +1532,50 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	tcp_rsk(req)->af_specific = &tcp_request_sock_ipv4_ops;
 #endif
 
-	tcp_clear_options(&tmp_opt);
-	tmp_opt.mss_clamp = TCP_MSS_DEFAULT;
-	tmp_opt.user_mss  = tp->rx_opt.user_mss;
-	tcp_parse_options(skb, &tmp_opt, 0, want_cookie ? NULL : &foc);
+	tcp_clear_options(&tmp_opt);    /* 清零TCP选项 */
+	tmp_opt.mss_clamp = TCP_MSS_DEFAULT;    /* 默认的MSS为536 */
+	tmp_opt.user_mss  = tp->rx_opt.user_mss;    /* user_mss是user通过ioctl设置的值 */
+	tcp_parse_options(skb, &tmp_opt, 0, want_cookie ? NULL : &foc);     /* 解析TCP选项 */
 
+    /* 如果想使用syncookie，但是双方timestamp没协商成功, 即timestamp选项不能用，则只好清零TCP选项
+     * 1. saw_tstamp虽然表面上是表示最近收到的一个数据包中，看到了对端发过来的timestamp选项，
+     *    但如果想要将它设置为1，本地也是要开启sysctl_tcp_timestamps选项的
+     * 2. syncookie功能以来与timestamp选项的开启 */
 	if (want_cookie && !tmp_opt.saw_tstamp)
 		tcp_clear_options(&tmp_opt);
 
-	tmp_opt.tstamp_ok = tmp_opt.saw_tstamp;
+    /* 如果timestamp协商成功，则设置tstamp_ok
+     * 有这里将saw_tstamp直接赋值给tstamp_ok，也可以看出saw_tstamp不是单单的看到对端发过来的包中有timestamp就会置为1的 */
+	tmp_opt.tstamp_ok = tmp_opt.saw_tstamp;     
+
+    /* 初始化request_sock */
 	tcp_openreq_init(req, &tmp_opt, skb);
 
 	ireq = inet_rsk(req);
-	ireq->loc_addr = daddr;
-	ireq->rmt_addr = saddr;
-	ireq->no_srccheck = inet_sk(sk)->transparent;
+	ireq->loc_addr = daddr;     /* 本地IP地址 */
+	ireq->rmt_addr = saddr;     /* 对端IP地址 */
+	ireq->no_srccheck = inet_sk(sk)->transparent;   /* TODO: 这是神马鬼? */
 	ireq->opt = tcp_v4_save_options(skb);
 
+    /* SELinux相关判断 */
 	if (security_inet_conn_request(sk, skb, req))
 		goto drop_and_free;
 
+    /* 如果不需要触发syncookies机制，
+     * 或者需要触发且timestamp协商成功，则都是允许创建request_sock的 */
+
 	if (!want_cookie || tmp_opt.tstamp_ok)
+        /* 判断是否可以启用ECN
+         * TODO: 具体怎么判断的 ? */
 		TCP_ECN_create_request(req, skb, sock_net(sk));
 
 	if (want_cookie) {
+        /* 如果需要启用syncookie，则计算cookie值，放入ISN中 */
+        /* 可见启用syncookie时，发送出去的ISN是至关重要的 */
 		isn = cookie_v4_init_sequence(sk, skb, &req->mss);
 		req->cookie_ts = tmp_opt.tstamp_ok;
 	} else if (!isn) {
+        /* TODO: 整个这个分支的逻辑都不太清晰，需要后续好好理解 */
 		/* VJ's idea. We save last timestamp seen
 		 * from the destination in peer table, when entering
 		 * state TIME-WAIT, and check against it before
@@ -1548,8 +1585,11 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 		 * timewait bucket, so that all the necessary checks
 		 * are made in the function processing timewait state.
 		 */
-		if (tmp_opt.saw_tstamp &&
-		    tcp_death_row.sysctl_tw_recycle &&
+        /* 如果isn为0，则进行PAWS检查
+         * TODO： 这个地方设计的route信息的什么意思 ?
+         * TODO: 这里的PAWS检测具体是怎么做的? */
+		if (tmp_opt.saw_tstamp &&       /* 如果timestamp协商成功 */
+		    tcp_death_row.sysctl_tw_recycle &&  /* 并且开启了sysctl_tw_recycle选项, 表示选择快速的回收TIME_WAIT状态的socket */
 		    (dst = inet_csk_route_req(sk, &fl4, req)) != NULL &&
 		    fl4.daddr == saddr) {
 			if (!tcp_peer_is_proven(req, dst, true)) {
@@ -1574,15 +1614,18 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 			goto drop_and_release;
 		}
 
+        /* 初始化一个正常(不是作为syncookie用途)的ISN值 */
 		isn = tcp_v4_init_sequence(skb);
 	}
 	tcp_rsk(req)->snt_isn = isn;
 
+    /* TODO: 路由相关 */
 	if (dst == NULL) {
 		dst = inet_csk_route_req(sk, &fl4, req);
 		if (dst == NULL)
 			goto drop_and_free;
 	}
+    /* TODO: fase open相关实现 */
 	do_fastopen = tcp_fastopen_check(sk, skb, req, &foc, &valid_foc);
 
 	/* We don't call tcp_v4_send_synack() directly because we need
@@ -1596,10 +1639,12 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	 * latter to remove its dependency on the current implementation
 	 * of tcp_v4_send_synack()->tcp_select_initial_window().
 	 */
+    /* 构建synack包 */
 	skb_synack = tcp_make_synack(sk, dst, req,
 	    fastopen_cookie_present(&valid_foc) ? &valid_foc : NULL);
 
 	if (skb_synack) {
+        /* 计算checksum */
 		__tcp_v4_send_check(skb_synack, ireq->loc_addr, ireq->rmt_addr);
 		skb_set_queue_mapping(skb_synack, skb_get_queue_mapping(skb));
 	} else
@@ -1607,15 +1652,18 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 
 	if (likely(!do_fastopen)) {
 		int err;
+        /* 构造ip头，然后发送出去 */
 		err = ip_build_and_send_pkt(skb_synack, sk, ireq->loc_addr,
 		     ireq->rmt_addr, ireq->opt);
 		err = net_xmit_eval(err);
 		if (err || want_cookie)
 			goto drop_and_free;
 
+        /* 记录synack的发送时间 */
 		tcp_rsk(req)->snt_synack = tcp_time_stamp;
 		tcp_rsk(req)->listener = NULL;
 		/* Add the request_sock to the SYN table */
+        /* 将新建的request_sock加入半连接队列 */
 		inet_csk_reqsk_queue_hash_add(sk, req, TCP_TIMEOUT_INIT);
 		if (fastopen_cookie_present(&foc) && foc.len != 0)
 			NET_INC_STATS_BH(sock_net(sk),
@@ -1823,7 +1871,7 @@ static __sum16 tcp_v4_checksum_init(struct sk_buff *skb)
  */
 int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 {
-	struct sock *rsk;
+	struct sock *rsk;   /* 应该是reset socket的缩写，表示由谁发送reset包 */
 #ifdef CONFIG_TCP_MD5SIG
 	/*
 	 * We really want to reject the packet as early as possible
@@ -2042,7 +2090,7 @@ int tcp_v4_rcv(struct sk_buff *skb)
 	TCP_SKB_CB(skb)->end_seq = (TCP_SKB_CB(skb)->seq + th->syn + th->fin +
 				    skb->len - th->doff * 4);
 	TCP_SKB_CB(skb)->ack_seq = ntohl(th->ack_seq);
-	TCP_SKB_CB(skb)->when	 = 0;
+	TCP_SKB_CB(skb)->when	 = 0;   /* when用于表示发送数据包的时间，所以对于收到的数据包，该值要设置为0 */
 	TCP_SKB_CB(skb)->ip_dsfield = ipv4_get_dsfield(iph);
 	TCP_SKB_CB(skb)->sacked	 = 0;   /* 初始化sacked标记 */
 

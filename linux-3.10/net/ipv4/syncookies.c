@@ -167,8 +167,10 @@ __u32 cookie_v4_init_sequence(struct sock *sk, struct sk_buff *skb, __u16 *mssp)
 	int mssind;
 	const __u16 mss = *mssp;
 
+    /* syncookies: 记录synqueue overflow的时间 */
 	tcp_synq_overflow(sk);
 
+    /* 对MSS进行向下取整，具体往哪些值取整，则以来msstab数组 */
 	for (mssind = ARRAY_SIZE(msstab) - 1; mssind ; mssind--)
 		if (mss >= msstab[mssind])
 			break;
@@ -176,6 +178,7 @@ __u32 cookie_v4_init_sequence(struct sock *sk, struct sk_buff *skb, __u16 *mssp)
 
 	NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_SYNCOOKIESSENT);
 
+    /* 利用两个ip地址，两个port，对端的ISN，当前的时间和mssind(mss index的意思)来计算得到一个cookier值 */
 	return secure_tcp_syn_cookie(iph->saddr, iph->daddr,
 				     th->source, th->dest, ntohl(th->seq),
 				     jiffies / (HZ * 60), mssind);
