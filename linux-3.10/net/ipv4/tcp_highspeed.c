@@ -13,9 +13,13 @@
 /* From AIMD tables from RFC 3649 appendix B,
  * with fixed-point MD scaled <<8.
  */
+/* 可以把hstcp_aimd_vals[]看成一个分段函数，自变量是cwnd，值为md
+ * 那ai值是怎么定的呢？
+ * 答：查找hstcp_aimd_vals[]，找到满足下面条件的ai
+ *     hstcp_aimd_vals[ai-1] < snd_cwnd < hstcp_aimd_vals[ai] */
 static const struct hstcp_aimd_val {
-	unsigned int cwnd;
-	unsigned int md;
+	unsigned int cwnd;  /* 区间分隔点 */
+	unsigned int md;    /* 放大256倍的MD因子,趋势是cwnd越大，MD越小 */
 } hstcp_aimd_vals[] = {
  {     38,  128, /*  0.50 */ },
  {    118,  112, /*  0.44 */ },
@@ -94,7 +98,7 @@ static const struct hstcp_aimd_val {
 #define HSTCP_AIMD_MAX	ARRAY_SIZE(hstcp_aimd_vals)
 
 struct hstcp {
-	u32	ai;
+	u32	ai;     /* AIMD中的ai */
 };
 
 static void hstcp_init(struct sock *sk)
@@ -127,11 +131,14 @@ static void hstcp_cong_avoid(struct sock *sk, u32 adk, u32 in_flight)
 		 *     snd_cwnd <=
 		 *     hstcp_aimd_vals[ca->ai].cwnd
 		 */
+        /* 在hstcp_admd_vals[]中找到满足条件的ai值 */
 		if (tp->snd_cwnd > hstcp_aimd_vals[ca->ai].cwnd) {
 			while (tp->snd_cwnd > hstcp_aimd_vals[ca->ai].cwnd &&
 			       ca->ai < HSTCP_AIMD_MAX - 1)
 				ca->ai++;
 		} else if (ca->ai && tp->snd_cwnd <= hstcp_aimd_vals[ca->ai-1].cwnd) {
+            /* 很明显，当cwnd小于hstcp_aimd_vals[0](即38)的时候，ai会减为0
+             * 上面注释中其实默认了另一条原则：假设hstcp_aimd_vals[-1]对应的cwnd值为0 */
 			while (ca->ai && tp->snd_cwnd <= hstcp_aimd_vals[ca->ai-1].cwnd)
 				ca->ai--;
 		}
@@ -139,6 +146,8 @@ static void hstcp_cong_avoid(struct sock *sk, u32 adk, u32 in_flight)
 		/* Do additive increase */
 		if (tp->snd_cwnd < tp->snd_cwnd_clamp) {
 			/* cwnd = cwnd + a(w) / cwnd */
+            /* 通过这样累加，从一个RTT来看，cwnd就会增加(ca->ai+1)个单位
+             * 当cwnd < 38, 即ai会等于零的时候，cwnd的增长就跟reno一样了 */
 			tp->snd_cwnd_cnt += ca->ai + 1;
 			if (tp->snd_cwnd_cnt >= tp->snd_cwnd) {
 				tp->snd_cwnd_cnt -= tp->snd_cwnd;
@@ -154,6 +163,7 @@ static u32 hstcp_ssthresh(struct sock *sk)
 	const struct hstcp *ca = inet_csk_ca(sk);
 
 	/* Do multiplicative decrease */
+    /* ssthesh设为 (1 - hstcp_aimd_vals[ai]) * cwnd */
 	return max(tp->snd_cwnd - ((tp->snd_cwnd * hstcp_aimd_vals[ca->ai].md) >> 8), 2U);
 }
 
