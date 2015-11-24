@@ -78,8 +78,11 @@ static void tcp_event_new_data_sent(struct sock *sk, const struct sk_buff *skb)
 	tcp_advance_send_head(sk, skb);
 	tp->snd_nxt = TCP_SKB_CB(skb)->end_seq;
 
+    /* 更新已经发出去，但未被确认的数据包数目 */
 	tp->packets_out += tcp_skb_pcount(skb);
-	if (!prior_packets || icsk->icsk_pending == ICSK_TIME_EARLY_RETRANS ||
+	if (!prior_packets ||   /* 如果之前未发送过数据，或者之前所有数据已经被按序确认掉了，那么应该开始RTO timer计时 */
+        /* 如果之前设置了ER timer，或者TLP timer，都是因为没有新数据发送才会设置的，如果一旦有新数据发送，这两个timer应该被取消，换回RTO timer */
+        icsk->icsk_pending == ICSK_TIME_EARLY_RETRANS ||
 	    icsk->icsk_pending == ICSK_TIME_LOSS_PROBE) {
 		tcp_rearm_rto(sk);
 	}

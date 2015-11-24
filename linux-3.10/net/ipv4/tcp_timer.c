@@ -362,11 +362,13 @@ static void tcp_fastopen_synack_timer(struct sock *sk)
 /*
  *	The TCP retransmit timer.
  */
+/* rto timer的处理函数 */
 void tcp_retransmit_timer(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct inet_connection_sock *icsk = inet_csk(sk);
 
+    /* TODO: fast open相关 */
 	if (tp->fastopen_rsk) {
 		WARN_ON_ONCE(sk->sk_state != TCP_SYN_RECV &&
 			     sk->sk_state != TCP_FIN_WAIT1);
@@ -385,8 +387,9 @@ void tcp_retransmit_timer(struct sock *sk)
 
 	tp->tlp_high_seq = 0;   /* TLP失败了，将TLP对应的标记清零 */
 
-	if (!tp->snd_wnd && !sock_flag(sk, SOCK_DEAD) &&
-	    !((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV))) {
+	if (!tp->snd_wnd &&     /* 发送窗口被减小为0 */
+        !sock_flag(sk, SOCK_DEAD) &&    /*  TODO: 这是什么意思？ */
+	    !((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV))) {     /* socket不是出于SYN_SENT或SYN_RECV阶段 */
 		/* Receiver dastardly shrinks window. Our retransmits
 		 * become zero probes, but we should not timeout this
 		 * connection. If the socket is an orphan, time it out,
@@ -416,6 +419,7 @@ void tcp_retransmit_timer(struct sock *sk)
 		tcp_enter_loss(sk, 0);  /* 进入TCP_CA_Loss阶段 */
         /* 重传队首的一个skb */
 		tcp_retransmit_skb(sk, tcp_write_queue_head(sk));
+        /* 清除路由 */
 		__sk_dst_reset(sk);
 		goto out_reset_timer;
 	}

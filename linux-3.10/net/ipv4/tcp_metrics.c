@@ -518,6 +518,10 @@ reset:
 		 * from the more aggressive 1sec to avoid more spurious
 		 * retransmission.
 		 */
+        /* 如果在3WHS阶段没有获得SRTT，则意味着发生了重传
+         * 进而选择将初始RTO设置为3s
+         * 注意当使用timestamp时，即使发生重传，srtt的采样值也是能获得得，
+         * 但既然使用timestamp，就认为rto会计算的比较好，就不使用fallback的rto值了*/
 		tp->mdev = tp->mdev_max = tp->rttvar = TCP_TIMEOUT_FALLBACK;
 		inet_csk(sk)->icsk_rto = TCP_TIMEOUT_FALLBACK;
 	}
@@ -526,6 +530,8 @@ reset:
 	 * initRTO, we only reset cwnd when more than 1 SYN/SYN-ACK
 	 * retransmission has occurred.
 	 */
+    /* 只要在三次握手阶段发生过重传，则将cwnd设置为1
+     * 没有重传过的话，就正常的初始化 -- 设置为10 */
 	if (tp->total_retrans > 1)
 		tp->snd_cwnd = 1;
 	else

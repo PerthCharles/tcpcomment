@@ -668,12 +668,16 @@ static void tcp_rtt_estimator(struct sock *sk, const __u32 mrtt)
 	 */
 	if (m == 0)
 		m = 1;
+    /* srtt不为零说明已经收到过有效的rtt采样 */
 	if (tp->srtt != 0) {
-		m -= (tp->srtt >> 3);	/* m is now error in rtt est */
-		tp->srtt += m;		/* rtt = 7/8 rtt + 1/8 new */
+        /* 更新SRTT的理论公式： SRTT = (1 - alpha) * SRTT + alpha * RTT, 其中alpha=1/8 */
+		m -= (tp->srtt >> 3);	/* m is now error in rtt est */     /* m <= RTT - SRTT */
+        /* 代码实际上求的是： 8SRTT <= 7SRTT + RTT */
+		tp->srtt += m;		/* rtt = 7/8 rtt + 1/8 new */   
+
 		if (m < 0) {
-			m = -m;		/* m is now abs(error) */
-			m -= (tp->mdev >> 2);   /* similar update on mdev */
+			m = -m;		/* m is now abs(error) */ /* 取绝对值 */
+			m -= (tp->mdev >> 2);   /* similar update on mdev */    /* m = |RTT - SRTT| - RTTVAR, 要记得tp->mdev存的是4倍的RTTVAR */
 			/* This is similar to one of Eifel findings.
 			 * Eifel blocks mdev updates when rtt decreases.
 			 * This solution is a bit different: we use finer gain
@@ -682,25 +686,37 @@ static void tcp_rtt_estimator(struct sock *sk, const __u32 mrtt)
 			 * but also it limits too fast rto decreases,
 			 * happening in pure Eifel.
 			 */
+            /* 此处m > 0，则表示此次的RTT采样与平滑的SRTT值差距较大，超过了RTTVAR
+             * RTTVAR的理论计算公式为：RTTVAR = (1 - beta)RTTVAR + beta |RTT - SRTT|
+             * 默认值beta = 1/4, 但实现时如果发现此次RTT采样较大，则选择beta=1/(4*8) */
 			if (m > 0)
 				m >>= 3;
 		} else {
+            /* m = |RTT - SRTT| - RTTVAR, 要记得tp->mdev存的是4倍的RTTVAR */
 			m -= (tp->mdev >> 2);   /* similar update on mdev */
 		}
+        /* 代码实际求的是：4RTTVAR <= 3RTTVAR + |RTT - SRTT|, 等价于beta = 1/4
+         * 如果上面发现RTT采样波动较大，则求的是 4RTTVAR <= (4 - 1/8)RTTVAR + 1/8 * |RTT - SRTT|, 等价于beta = 1/32 */
 		tp->mdev += m;	    	/* mdev = 3/4 mdev + 1/4 new */
+
+        /* 整整的RTTVAR会取最大的一个值, 以保证RTO只会计算的偏大，而不会偏小 */
 		if (tp->mdev > tp->mdev_max) {
 			tp->mdev_max = tp->mdev;
 			if (tp->mdev_max > tp->rttvar)
 				tp->rttvar = tp->mdev_max;
 		}
+        /* 如果经过了一个RTT，则适当降低RTTVAR，并重置mdev_max */
 		if (after(tp->snd_una, tp->rtt_seq)) {
 			if (tp->mdev_max < tp->rttvar)
+                /* 适当的降低RTTVAR */
 				tp->rttvar -= (tp->rttvar - tp->mdev_max) >> 2;
-			tp->rtt_seq = tp->snd_nxt;
+			tp->rtt_seq = tp->snd_nxt;      /* 用于记录新RTT周期的开始 */
 			tp->mdev_max = tcp_rto_min(sk);
 		}
 	} else {
 		/* no previous measure. */
+        /* 第一次获得rtt采样时，令8SRTT = 8RTT，4RTTVAR = max( 2RTT, 200ms)
+         * 而RTO = SRTT + 4RTTVAR, 保障RTO至少有3个RTT大小 */
 		tp->srtt = m << 3;	/* take the measured time to be rtt */
 		tp->mdev = m << 1;	/* make sure rto = 3*rtt */
 		tp->mdev_max = tp->rttvar = max(tp->mdev, tcp_rto_min(sk));
