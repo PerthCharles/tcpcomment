@@ -598,14 +598,18 @@ extern void tcp_mtup_init(struct sock *sk);
 extern void tcp_valid_rtt_meas(struct sock *sk, u32 seq_rtt);
 extern void tcp_init_buffer_space(struct sock *sk);
 
+/* 限制rto最大值不超过120s */
 static inline void tcp_bound_rto(const struct sock *sk)
 {
 	if (inet_csk(sk)->icsk_rto > TCP_RTO_MAX)
 		inet_csk(sk)->icsk_rto = TCP_RTO_MAX;
 }
 
+/* rto更新公式： RTO = SRTT + 4*RTTVAR */
 static inline u32 __tcp_set_rto(const struct tcp_sock *tp)
 {
+    /* tp->srtt右移是因为它存的就是<<3的值，在看rtt相关代码时，要时刻注意这点
+     * tp->rttvar则是存的<<2的值 */
 	return (tp->srtt >> 3) + tp->rttvar;
 }
 
@@ -635,6 +639,7 @@ static inline void tcp_fast_path_check(struct sock *sk)
 }
 
 /* Compute the actual rto_min value */
+/* 返回系统默认配置的min rto */
 static inline u32 tcp_rto_min(struct sock *sk)
 {
 	const struct dst_entry *dst = __sk_dst_get(sk);
@@ -700,6 +705,10 @@ struct tcp_skb_cb {
 	} header;	/* For incoming frames		*/
 	__u32		seq;		/* Starting sequence number	*/
 	__u32		end_seq;	/* SEQ + FIN + SYN + datalen	*/
+    /* when的用途：
+     * 1. 用于记录该发送skb的时间，从而可以计算RTT
+     * 2. when + rto值等于要进行超时重传的时间
+     */
 	__u32		when;		/* used to compute rtt's	*/
 	__u8		tcp_flags;	/* TCP header flags. (tcp[13])	*/
 

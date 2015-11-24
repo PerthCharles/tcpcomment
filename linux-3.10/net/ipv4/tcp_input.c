@@ -641,6 +641,10 @@ static void tcp_event_data_recv(struct sock *sk, struct sk_buff *skb)
  * To save cycles in the RFC 1323 implementation it was better to break
  * it up into three procedures. -- erics
  */
+/* 理解下面的代码时，要记得一下几点：
+ * 1. tp->srtt是8倍(<<3)的值，便于算法公式中的除以8
+ * 2. tp->rttvar存的是4倍(<<2)的值,便于算法公式中的除以4
+ */
 static void tcp_rtt_estimator(struct sock *sk, const __u32 mrtt)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -731,6 +735,9 @@ void tcp_set_rto(struct sock *sk)
 	/* NOTE: clamping at TCP_RTO_MIN is not required, current algo
 	 * guarantees that rto is higher.
 	 */
+    /* 限制rto的最大值
+     * 上面的注释中虽然说rto更新时不需要设置TCP_RTO_MIN，
+     * 但这是因为更新srtt，rttvar的时候已经用过TCP_RTO_MIN进行限制了 */
 	tcp_bound_rto(sk);
 }
 
@@ -2939,10 +2946,14 @@ static void tcp_fastretrans_alert(struct sock *sk, int pkts_acked,
 	tcp_xmit_retransmit_queue(sk);
 }
 
+/* 获得一个有效的rtt sample后，更新srtt, rttvar,和rto */
 void tcp_valid_rtt_meas(struct sock *sk, u32 seq_rtt)
 {
+    /* 更新srtt, rttvar */
 	tcp_rtt_estimator(sk, seq_rtt);
+    /* 更新rto */
 	tcp_set_rto(sk);
+    /* icsk_backoff是rto timer用于进行指数回避的值 */
 	inet_csk(sk)->icsk_backoff = 0;
 }
 EXPORT_SYMBOL(tcp_valid_rtt_meas);
@@ -2969,6 +2980,7 @@ static void tcp_ack_saw_tstamp(struct sock *sk, int flag)
 	 */
 	struct tcp_sock *tp = tcp_sk(sk);
 
+    /* 如果timestamp可用，则用tcp_time_stamp - tsecr得到有效的rtt sample */
 	tcp_valid_rtt_meas(sk, tcp_time_stamp - tp->rx_opt.rcv_tsecr);
 }
 
@@ -2982,7 +2994,8 @@ static void tcp_ack_no_tstamp(struct sock *sk, u32 seq_rtt, int flag)
 	 * where the network delay has increased suddenly.
 	 * I.e. Karn's algorithm. (SIGCOMM '87, p5.)
 	 */
-
+    /* 不使用重传包进行rtt采样，已经有上层调用函数保证了，
+     * 这里再次更严谨的判断，是为了避免调用tcp_valid_rtt_meas()重置icsk_backoff值 */
 	if (flag & FLAG_RETRANS_DATA_ACKED)
 		return;
 
@@ -2994,8 +3007,13 @@ static inline void tcp_ack_update_rtt(struct sock *sk, const int flag,
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	/* Note that peer MAY send zero echo. In this case it is ignored. (rfc1323) */
+    /* 如果timestamp协商成功，并且也收到了非0的tsecr值，则使用timestamp信息计算RTT */
 	if (tp->rx_opt.saw_tstamp && tp->rx_opt.rcv_tsecr)
 		tcp_ack_saw_tstamp(sk, flag);
+    /* 如果未开启timestamp，seq_rtt也是一个合法的值，那么也能更新rtt
+     * -- 上层调用函数负责计算seq_rtt：
+     *  1. 如果这个数据包未重传过，则发送skb时记录的when值还可以用一用，用timestamp - when就得到seq_rtt
+     *  2. 如果数据包重传过，则无法放心的使用when值计算rtt，故放弃这个计算rtt的机会，设置seq_rtt为 -1 */
 	else if (seq_rtt >= 0)
 		tcp_ack_no_tstamp(sk, seq_rtt, flag);
 }
@@ -3011,6 +3029,7 @@ static void tcp_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 /* Restart timer after forward progress on connection.
  * RFC2988 recommends to restart timer to now+rto.
  */
+/* 重设重传超时计时器 */
 void tcp_rearm_rto(struct sock *sk)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
@@ -3019,14 +3038,18 @@ void tcp_rearm_rto(struct sock *sk)
 	/* If the retrans timer is currently being used by Fast Open
 	 * for SYN-ACK retrans purpose, stay put.
 	 */
+    /* 如果计时器正用于fast open机制，则不重设 */
 	if (tp->fastopen_rsk)
 		return;
 
 	if (!tp->packets_out) {
+        /* 如果已经没有数据包在外面了，则可以清楚rto timer，不用重设了 */
 		inet_csk_clear_xmit_timer(sk, ICSK_TIME_RETRANS);
 	} else {
 		u32 rto = inet_csk(sk)->icsk_rto;
 		/* Offset the time elapsed after installing regular RTO */
+        /* 这一段的内在含义就是：如果rto时间已经被ER或TLP用掉了一部分，
+         * 但是又没有用完，还剩下多少，rto就被还原成多少，所以叫rearm_rto */
 		if (icsk->icsk_pending == ICSK_TIME_EARLY_RETRANS ||
 		    icsk->icsk_pending == ICSK_TIME_LOSS_PROBE) {
 			struct sk_buff *skb = tcp_write_queue_head(sk);
@@ -3038,6 +3061,7 @@ void tcp_rearm_rto(struct sock *sk)
 			if (delta > 0)
 				rto = delta;
 		}
+        /* 设置重传计时器，计时器的用途为ICSK_TIME_RETRANS即rto timer */
 		inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS, rto,
 					  TCP_RTO_MAX);
 	}
@@ -3195,7 +3219,9 @@ static int tcp_clean_rtx_queue(struct sock *sk, int prior_fackets,
 			tcp_mtup_probe_success(sk);
 		}
 
+        /* 当收到一个ACK后，会更新rtt sample，进而更新srtt, rttvar, 最终更新rto */
 		tcp_ack_update_rtt(sk, flag, seq_rtt);
+        /* 重新启动超时计时器,使用刚更新后的rto值 */
 		tcp_rearm_rto(sk);
 
 		if (tcp_is_reno(tp)) {
