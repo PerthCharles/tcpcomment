@@ -1,4 +1,3 @@
-tcp_htcp.c
 tcp_westwood.c
 tcp_veno.c
 tcp_hybla.c
