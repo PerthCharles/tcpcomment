@@ -1862,11 +1862,15 @@ static void tcp_remove_reno_sacks(struct sock *sk, int acked)
 	tcp_verify_left_out(tp);
 }
 
+/* 重置dupack计数器 */
 static inline void tcp_reset_reno_sack(struct tcp_sock *tp)
 {
 	tp->sacked_out = 0;
 }
 
+/* 清理重传相关的计数器
+ * 比如既然超时了，就默认之前retrans_out的包也都被丢掉了，
+ * 所以选择将retrans_out设置为0. */
 static void tcp_clear_retrans_partial(struct tcp_sock *tp)
 {
 	tp->retrans_out = 0;
@@ -1888,6 +1892,7 @@ void tcp_clear_retrans(struct tcp_sock *tp)
  * and reset tags completely, otherwise preserve SACKs. If receiver
  * dropped its ofo queue, we will know this due to reneging detection.
  */
+/* how的作用可参考上面的注释，目前为止只有在tcp_check_sack_reneging函数中进入loss状态会设置how为1 */
 void tcp_enter_loss(struct sock *sk, int how)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
@@ -1896,46 +1901,65 @@ void tcp_enter_loss(struct sock *sk, int how)
 	bool new_recovery = false;
 
 	/* Reduce ssthresh if it has not yet been made inside this window. */
-	if (icsk->icsk_ca_state <= TCP_CA_Disorder ||
-	    !after(tp->high_seq, tp->snd_una) ||
-	    (icsk->icsk_ca_state == TCP_CA_Loss && !icsk->icsk_retransmits)) {
-		new_recovery = true;
+	if (icsk->icsk_ca_state <= TCP_CA_Disorder ||   /* <= disorder状态，起始就是open或disorder状态的意思 */
+	    !after(tp->high_seq, tp->snd_una) ||        /* TODO： high_seq是干嘛的 ? */
+	    (icsk->icsk_ca_state == TCP_CA_Loss && !icsk->icsk_retransmits)) {  /* 虽然已经设置了Loss状态，但还没有正式的重传 */
+		new_recovery = true;    /* 开始一段新的RTO重传之旅 */
+        /* 注意：prior_ssthrehs可能获取的是当前cwnd的0.75倍，而不是真实的prior_ssthrehs值 */
 		tp->prior_ssthresh = tcp_current_ssthresh(sk);
+        /* 按照拥塞控制算法，重设ssthresh */
 		tp->snd_ssthresh = icsk->icsk_ca_ops->ssthresh(sk);
+        /* 目前只有westwood中会关心这个event */
 		tcp_ca_event(sk, CA_EVENT_LOSS);
 	}
+
+    /* 将cwnd设置为1，代价惨重啊 */
 	tp->snd_cwnd	   = 1;
 	tp->snd_cwnd_cnt   = 0;
 	tp->snd_cwnd_stamp = tcp_time_stamp;
 
+    /* 清理重传相关的计数器，比如retrans_out，因为既然都rto超时了，那些重传的包也会认为已经被丢掉了 */
 	tcp_clear_retrans_partial(tp);
 
+    /* 如果不支持SACK选项，sacked_out表示的dupack个数，也要重置了 */
 	if (tcp_is_reno(tp))
 		tcp_reset_reno_sack(tp);
 
-	tp->undo_marker = tp->snd_una;
+	tp->undo_marker = tp->snd_una;  /* TODO: undo_marker是个什么鬼? */
+    /* 如果选择将SACK信息都忽视掉，则还要清楚sack相关计数器 */
 	if (how) {
 		tp->sacked_out = 0;
 		tp->fackets_out = 0;
 	}
+    /* TODO: retrans_hints是什么鬼？ */
 	tcp_clear_all_retrans_hints(tp);
 
+    /* 进一次loss状态，都会遍历一次整个重传队列啊，代价惨重 ! */
 	tcp_for_write_queue(skb, sk) {
 		if (skb == tcp_send_head(sk))
 			break;
 
 		if (TCP_SKB_CB(skb)->sacked & TCPCB_RETRANS)
 			tp->undo_marker = 0;
+
+        /* 在这三个标记中(TCPCB_SACKED_ACKED、TCPCB_SACKED_RETRANS、TCPCB_LOST)
+         * 仅保留TCPCB_SACKED_ACKED标记。
+         * 意思就是：保留SACK信息，清除retrans、loss标记 */
+        /* TODO： 为什么要清除retrans和loss标记 */
 		TCP_SKB_CB(skb)->sacked &= (~TCPCB_TAGBITS)|TCPCB_SACKED_ACKED;
-		if (!(TCP_SKB_CB(skb)->sacked&TCPCB_SACKED_ACKED) || how) {
-			TCP_SKB_CB(skb)->sacked &= ~TCPCB_SACKED_ACKED;
-			TCP_SKB_CB(skb)->sacked |= TCPCB_LOST;
-			tp->lost_out += tcp_skb_pcount(skb);
-			tp->retransmit_high = TCP_SKB_CB(skb)->end_seq;
+
+		if (!(TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_ACKED)     /* 该SKB没有SACK信息 */
+            || how) {                                           /* 或者需要忽略SACK信息 */
+			TCP_SKB_CB(skb)->sacked &= ~TCPCB_SACKED_ACKED;     /* 清除ACK标记 */
+			TCP_SKB_CB(skb)->sacked |= TCPCB_LOST;              /* 标记loss标记 */
+			tp->lost_out += tcp_skb_pcount(skb);                /* 既然把之前被SACK的包认为也丢弃了，则更新计数器 */
+			tp->retransmit_high = TCP_SKB_CB(skb)->end_seq;     /* TODO： retransmit_high的内在含义是？ */
 		}
 	}
+    /* 验证left_out (= sacked_out + lost_out) 不超过packets_out (= snd_nxt - snd_una) */
 	tcp_verify_left_out(tp);
 
+    /* 更新reordering值, TODO： 目前认为这属于防止reordering被sysctl方式改小? */
 	tp->reordering = min_t(unsigned int, tp->reordering,
 			       sysctl_tcp_reordering);
 	tcp_set_ca_state(sk, TCP_CA_Loss);
@@ -1946,6 +1970,8 @@ void tcp_enter_loss(struct sock *sk, int how)
 	 * loss recovery is underway except recurring timeout(s) on
 	 * the same SND.UNA (sec 3.2). Disable F-RTO on path MTU probing
 	 */
+    /* frto机制，逻辑看上面注释即可。
+     * TODO： 但为什么在已经不是第一次RTO的时候，依然进行FRTO？ */
 	tp->frto = sysctl_tcp_frto &&
 		   (new_recovery || icsk->icsk_retransmits) &&
 		   !inet_csk(sk)->icsk_mtup.probe_size;

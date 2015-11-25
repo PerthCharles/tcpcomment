@@ -317,6 +317,7 @@ static inline bool tcp_out_of_memory(struct sock *sk)
 	return false;
 }
 
+/* 判断orphan sockets是否超过上限, shift是惩罚因子 */
 static inline bool tcp_too_many_orphans(struct sock *sk, int shift)
 {
 	struct percpu_counter *ocp = sk->sk_prot->orphan_count;
@@ -935,7 +936,7 @@ static inline bool tcp_in_cwnd_reduction(const struct sock *sk)
  * The exception is cwnd reduction phase, when cwnd is decreasing towards
  * ssthresh.
  */
-/* 如果不在cwnd reduction阶段，则将ssthresh设置当前cwnd的0.75倍 */
+/* 如果不在cwnd reduction阶段，则返回当前cwnd的0.75倍 */
 static inline __u32 tcp_current_ssthresh(const struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);

@@ -2037,6 +2037,7 @@ void tcp_shutdown(struct sock *sk, int how)
 }
 EXPORT_SYMBOL(tcp_shutdown);
 
+/* 检查orphaned socket数量是否超过上限，或者socket已经使用了过多的内存 */
 bool tcp_check_oom(struct sock *sk, int shift)
 {
 	bool too_many_orphans, out_of_socket_memory;
@@ -2044,6 +2045,7 @@ bool tcp_check_oom(struct sock *sk, int shift)
 	too_many_orphans = tcp_too_many_orphans(sk, shift);
 	out_of_socket_memory = tcp_out_of_memory(sk);
 
+    /* 打印相关日志信息 */
 	if (too_many_orphans)
 		net_info_ratelimited("too many orphaned sockets\n");
 	if (out_of_socket_memory)
@@ -2547,6 +2549,7 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 			tp->keepalive_probes = val;
 		break;
 	case TCP_SYNCNT:
+        /* 如果用户指定了有效的syn重传个数：[1, 127]，则设置该值，而不采用系统默认参数: tcp_syn_retries */
 		if (val < 1 || val > MAX_TCP_SYNCNT)
 			err = -EINVAL;
 		else
@@ -2768,6 +2771,7 @@ static int do_tcp_getsockopt(struct sock *sk, int level,
 		val = keepalive_probes(tp);
 		break;
 	case TCP_SYNCNT:
+        /* 获取之前配置的值，或者系统默认的值 */
 		val = icsk->icsk_syn_retries ? : sysctl_tcp_syn_retries;
 		break;
 	case TCP_LINGER2:

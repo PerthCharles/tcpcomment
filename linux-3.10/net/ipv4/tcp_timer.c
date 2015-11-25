@@ -32,6 +32,7 @@ int sysctl_tcp_retries2 __read_mostly = TCP_RETR2;
 int sysctl_tcp_orphan_retries __read_mostly;
 int sysctl_tcp_thin_linear_timeouts __read_mostly;
 
+/* 如果重传多次后依然没收到对端的响应，则只好关闭socket */
 static void tcp_write_err(struct sock *sk)
 {
 	sk->sk_err = sk->sk_err_soft ? : ETIMEDOUT;
@@ -52,9 +53,13 @@ static void tcp_write_err(struct sock *sk)
  *    limit.
  * 2. If we have strong memory pressure.
  */
+/* 返回0表示没有out_of_resources, 
+ * 返回1表示资源出现不足了，而且socket已经被设置为CLOSE状态 */
 static int tcp_out_of_resources(struct sock *sk, int do_reset)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
+    /* shift的含义就是：在判断是否超过上限时，将默认的上限左移shift次，缩小 2^shift倍
+     * 所以也就很好理解下面的penalize是什么意思了 */
 	int shift = 0;
 
 	/* If peer does not open window for long time, or did not transmit
@@ -66,16 +71,24 @@ static int tcp_out_of_resources(struct sock *sk, int do_reset)
 	if (sk->sk_err_soft)
 		shift++;
 
+    /* tcp_check_oom()负责具体的检查orphaned sockets是否超过上限，和内存使用量 */
 	if (tcp_check_oom(sk, shift)) {
 		/* Catch exceptional cases, when connection requires reset.
 		 *      1. Last segment was sent recently. */
+        /* 如果最近的一个数据包的发送时间还处在TIMEWAIT_LEN(60s)以内，则需要发送reset
+         * 既然本地由于资源不足，想要关闭这个socket，那么自然要发送reset通知对端.
+         * 但是如果距离上一次发送数据包已经过去了很久60s，那么"实现者"认为没什么必要发送这个reset
+         * TODO：RFC有解释为什么吗 ？ 目前的理解还只是基于现有知识的猜测 */
 		if ((s32)(tcp_time_stamp - tp->lsndtime) <= TCP_TIMEWAIT_LEN ||
 		    /*  2. Window is closed. */
+        /* 如果对端关闭了发送窗口，或者本端已经没有数据在外面，则需要发送reset
+         * 这种情况下要主动的发送reset，是因为此时没有条件被动的触发reset */
 		    (!tp->snd_wnd && !tp->packets_out))
 			do_reset = 1;
+
 		if (do_reset)
 			tcp_send_active_reset(sk, GFP_ATOMIC);
-		tcp_done(sk);
+		tcp_done(sk);   /* 关闭socket */
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPABORTONMEMORY);
 		return 1;
 	}
@@ -83,6 +96,7 @@ static int tcp_out_of_resources(struct sock *sk, int do_reset)
 }
 
 /* Calculate maximal number or retries on an orphaned socket. */
+/* TODO: orphaned socket具体是什么？ 怎么产生的 */
 static int tcp_orphan_retries(struct sock *sk, int alive)
 {
 	int retries = sysctl_tcp_orphan_retries; /* May be zero. */
@@ -94,6 +108,7 @@ static int tcp_orphan_retries(struct sock *sk, int alive)
 	/* However, if socket sent something recently, select some safe
 	 * number of retries. 8 corresponds to >100 seconds with minimal
 	 * RTO of 200msec. */
+    /* 理解英文注释即可 */
 	if (retries == 0 && alive)
 		retries = 8;
 	return retries;
@@ -124,23 +139,35 @@ static void tcp_mtu_probing(struct inet_connection_sock *icsk, struct sock *sk)
  * retransmissions with an initial RTO of TCP_RTO_MIN or TCP_TIMEOUT_INIT if
  * syn_set flag is set.
  */
+/* 判断rto重传次数是否超过了boundary
+ * 但是：这个函数是将boundary次数转换一个timeout时间来进行判断的
+ * timeout时间的计算方法时：为以TCP_RTO_MIN为初始值，进行boundary次指数回避重传需要的时间
+ */
 static bool retransmits_timed_out(struct sock *sk,
 				  unsigned int boundary,
 				  unsigned int timeout,
 				  bool syn_set)
 {
 	unsigned int linear_backoff_thresh, start_ts;
+    /* 如果是发送syn包，rto_base就设置为1s，否则设置为200ms */
 	unsigned int rto_base = syn_set ? TCP_TIMEOUT_INIT : TCP_RTO_MIN;
 
+    /* 如果没有进行过rto 重传，自然返回false */
 	if (!inet_csk(sk)->icsk_retransmits)
 		return false;
 
+    /* 如果进行过重传，应该会设置重传开始的时间retrans_stamp
+     * 如果实在没有，就使用发送队列第一个skb的(重传)发送时间*/
 	if (unlikely(!tcp_sk(sk)->retrans_stamp))
 		start_ts = TCP_SKB_CB(tcp_write_queue_head(sk))->when;
 	else
 		start_ts = tcp_sk(sk)->retrans_stamp;
 
+    /* 目前调用该函数的时候，timeout都是设置为0，依然保留该参数可能是代码变更历史原因 */
 	if (likely(timeout == 0)) {
+        /* 计算从rto_base增长到TCP_RTO_MAX的次数
+         * 理解下面的代码，只要记得rto有TCP_RTO_MAX作为上限限制，
+         * 故rto的增长方式其实是一个分段函数，想着这点就很好理解了 */
 		linear_backoff_thresh = ilog2(TCP_RTO_MAX/rto_base);
 
 		if (boundary <= linear_backoff_thresh)
@@ -149,22 +176,29 @@ static bool retransmits_timed_out(struct sock *sk,
 			timeout = ((2 << linear_backoff_thresh) - 1) * rto_base +
 				(boundary - linear_backoff_thresh) * TCP_RTO_MAX;
 	}
+    /* 判断进行rto重传的总时间，是否超过了由boundary计算得来的timeout时间 */
 	return (tcp_time_stamp - start_ts) >= timeout;
 }
 
 /* A write timeout has occurred. Process the after effects. */
+/* 计算rto是否已经重传了足够多，足够久，该放弃的时候就得放弃，否则没头了 */
 static int tcp_write_timeout(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	int retry_until;
 	bool do_reset, syn_set = false;
 
+    /* 如果状态处于SYN_SEND或SYN_RECV状态 */
 	if ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
+        /* 如果已经不是第一次重传了，则怀疑路由有问题了 */
 		if (icsk->icsk_retransmits)
 			dst_negative_advice(sk);
+        /* 由于synack的重传是会复用keepalive timer的，所以这里仅需要关心syn的重传即可 */
 		retry_until = icsk->icsk_syn_retries ? : sysctl_tcp_syn_retries;
 		syn_set = true;
 	} else {
+        /* 判断重传次数是否已经超过sysctl_tcp_retries1次，如果超过了，则担心路由出现问题了，
+         * 则要重新选路 */
 		if (retransmits_timed_out(sk, sysctl_tcp_retries1, 0, 0)) {
 			/* Black hole detection */
 			tcp_mtu_probing(icsk, sk);
@@ -174,17 +208,20 @@ static int tcp_write_timeout(struct sock *sk)
 
 		retry_until = sysctl_tcp_retries2;
 		if (sock_flag(sk, SOCK_DEAD)) {
+            /* 如果已经是一个orphan的socket，并且它的rto还没有达到120s，则考虑再给它一点活路 */
 			const int alive = (icsk->icsk_rto < TCP_RTO_MAX);
 
 			retry_until = tcp_orphan_retries(sk, alive);
+            /* TODO：理解发送reset的内在理由 */
 			do_reset = alive ||
-				!retransmits_timed_out(sk, retry_until, 0, 0);
+				!retransmits_timed_out(sk, retry_until, 0, 0);  /* 如果判断没有超过重传次数，则发送reset */
 
 			if (tcp_out_of_resources(sk, do_reset))
 				return 1;
 		}
 	}
 
+    /* 判断重传次数是否超过sysctl_tcp_retries2  -- 当然还可能是tcp_orphan_retires() */
 	if (retransmits_timed_out(sk, retry_until,
 				  syn_set ? 0 : icsk->icsk_user_timeout, syn_set)) {
 		/* Has it gone just too far? */
@@ -389,13 +426,14 @@ void tcp_retransmit_timer(struct sock *sk)
 
 	if (!tp->snd_wnd &&     /* 发送窗口被减小为0 */
         !sock_flag(sk, SOCK_DEAD) &&    /*  TODO: 这是什么意思？ */
-	    !((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV))) {     /* socket不是出于SYN_SENT或SYN_RECV阶段 */
+	    !((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV))) {     /* socket不是处于SYN_SENT或SYN_RECV阶段 */
 		/* Receiver dastardly shrinks window. Our retransmits
 		 * become zero probes, but we should not timeout this
 		 * connection. If the socket is an orphan, time it out,
 		 * we cannot allow such beasts to hang infinitely.
 		 */
 		struct inet_sock *inet = inet_sk(sk);
+        /* 打印相关的警告信息 */
 		if (sk->sk_family == AF_INET) {
 			LIMIT_NETDEBUG(KERN_DEBUG pr_fmt("Peer %pI4:%u/%u unexpectedly shrunk window %u:%u (repaired)\n"),
 				       &inet->inet_daddr,
@@ -452,6 +490,7 @@ void tcp_retransmit_timer(struct sock *sk)
 	}
 
     /* 正常方式进入重传状态, 不正常方式指的是前面发现对端shrunk receive window的情况 */
+    /* 这里的参数0，表示依然保留SACK信息，毕竟没有任何证明对端违背SACK信息的证据 */
 	tcp_enter_loss(sk, 0);
 
 	if (tcp_retransmit_skb(sk, tcp_write_queue_head(sk)) > 0) {
