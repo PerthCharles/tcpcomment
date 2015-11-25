@@ -360,6 +360,7 @@ static inline void TCP_ECN_send(struct sock *sk, struct sk_buff *skb,
 /* Constructs common control bits of non-data skb. If SYN/FIN is present,
  * auto increment end seqno.
  */
+/* 初始化一个不携带数据的skb */
 static void tcp_init_nondata_skb(struct sk_buff *skb, u32 seq, u8 flags)
 {
 	skb->ip_summed = CHECKSUM_PARTIAL;
@@ -372,6 +373,8 @@ static void tcp_init_nondata_skb(struct sk_buff *skb, u32 seq, u8 flags)
 	skb_shinfo(skb)->gso_size = 0;
 	skb_shinfo(skb)->gso_type = 0;
 
+    /* 不包含数据的skb的end_seq自然应该是等于seq的，但如果要携带SYN或者FIN标记，
+     * 则end_seq序号增加1. 也就是说SYN和FIN是会占用tcp 序号的 */
 	TCP_SKB_CB(skb)->seq = seq;
 	if (flags & (TCPHDR_SYN | TCPHDR_FIN))
 		seq++;
@@ -3121,7 +3124,7 @@ static int tcp_xmit_probe_skb(struct sock *sk, int urgent)
 	 * send it.
 	 */
 	tcp_init_nondata_skb(skb, tp->snd_una - !urgent, TCPHDR_ACK);
-	TCP_SKB_CB(skb)->when = tcp_time_stamp;
+	TCP_SKB_CB(skb)->when = tcp_time_stamp;     /* 记录skb的发送时间 */
 	return tcp_transmit_skb(sk, skb, 0, GFP_ATOMIC);
 }
 
@@ -3181,6 +3184,7 @@ int tcp_write_wakeup(struct sock *sk)
 /* A window probe timeout has occurred.  If window is not closed send
  * a partial packet else a zero probe.
  */
+/* 发送一个零窗口探测包 */
 void tcp_send_probe0(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);

@@ -22,13 +22,13 @@
 #include <linux/gfp.h>
 #include <net/tcp.h>
 
-int sysctl_tcp_syn_retries __read_mostly = TCP_SYN_RETRIES;
-int sysctl_tcp_synack_retries __read_mostly = TCP_SYNACK_RETRIES;
+int sysctl_tcp_syn_retries __read_mostly = TCP_SYN_RETRIES;             /* syn包重传次数上限 */
+int sysctl_tcp_synack_retries __read_mostly = TCP_SYNACK_RETRIES;       /* synack包重传四处上限 */
 int sysctl_tcp_keepalive_time __read_mostly = TCP_KEEPALIVE_TIME;
 int sysctl_tcp_keepalive_probes __read_mostly = TCP_KEEPALIVE_PROBES;
 int sysctl_tcp_keepalive_intvl __read_mostly = TCP_KEEPALIVE_INTVL;
-int sysctl_tcp_retries1 __read_mostly = TCP_RETR1;
-int sysctl_tcp_retries2 __read_mostly = TCP_RETR2;
+int sysctl_tcp_retries1 __read_mostly = TCP_RETR1;      /* rto重传次数达到该值，则更新路由 */
+int sysctl_tcp_retries2 __read_mostly = TCP_RETR2;      /* rto重传次数达到该值，则放弃重传，关闭连接 */
 int sysctl_tcp_orphan_retries __read_mostly;
 int sysctl_tcp_thin_linear_timeouts __read_mostly;
 
@@ -114,6 +114,7 @@ static int tcp_orphan_retries(struct sock *sk, int alive)
 	return retries;
 }
 
+/* TODO： mtu probeing的触发时机，功能，具体做法 */
 static void tcp_mtu_probing(struct inet_connection_sock *icsk, struct sock *sk)
 {
 	/* Black hole detection */
@@ -297,7 +298,7 @@ out:
 /* 延迟确认定时器的处理函数
  * 如果local在icsk->icsk_ack.timeout时间内都没有要跟着这个被delay的ACK
  * 一块发出去的数据，那么延迟确认定时器就会超时。进而调用这个处理函数
- * 来发送一个纯粹的ACK包
+ * 来发送一个纯粹的,被delay了的，ACK包
  */
 static void tcp_delack_timer(unsigned long data)
 {
