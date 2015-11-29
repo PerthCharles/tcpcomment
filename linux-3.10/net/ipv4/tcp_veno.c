@@ -16,6 +16,9 @@
 
 #include <net/tcp.h>
 
+/* 其实veno跟vegas很像，区别就是vegas用判断的拥塞信息去控制窗口；
+ * 而veno用判断的拥塞信息区控制AIMD的MD值 */
+
 /* Default values of the Veno variables, in fixed-point representation
  * with V_PARAM_SHIFT bits to the right of the binary point.
  */
@@ -93,8 +96,10 @@ static void tcp_veno_pkts_acked(struct sock *sk, u32 cnt, s32 rtt_us)
 
 static void tcp_veno_state(struct sock *sk, u8 ca_state)
 {
+    /* 进入Open状态时，开启veno */
 	if (ca_state == TCP_CA_Open)
 		veno_enable(sk);
+    /* 其余情况都选择关闭veno */
 	else
 		veno_disable(sk);
 }
@@ -110,6 +115,8 @@ static void tcp_veno_state(struct sock *sk, u8 ca_state)
  */
 static void tcp_veno_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 {
+    /* 开始发送数据或者idle restart时，对veno进行初始化
+     * 主要就是初始化basertt和minrtt */
 	if (event == CA_EVENT_CWND_RESTART || event == CA_EVENT_TX_START)
 		tcp_veno_init(sk);
 }
@@ -119,6 +126,7 @@ static void tcp_veno_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct veno *veno = inet_csk_ca(sk);
 
+    /* 不启用veno算法时，选择reno算法进行拥塞控制 */
 	if (!veno->doing_veno_now) {
 		tcp_reno_cong_avoid(sk, ack, in_flight);
 		return;
@@ -144,6 +152,10 @@ static void tcp_veno_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 
 		rtt = veno->minrtt;
 
+        /* 第一条、第三条语句连起来的效果就是：
+         * target_cwnd = ((tp->snd_cwnd) * veno->basertt) / rtt
+         * 这个公式与vegas中使用的是一样的
+         * V_PARAM_SHIFTj就是一个实现上进行精度控制的trick，理解算法时可忽略 */
 		target_cwnd = (tp->snd_cwnd * veno->basertt);
 		target_cwnd <<= V_PARAM_SHIFT;
 		do_div(target_cwnd, rtt);
@@ -154,6 +166,7 @@ static void tcp_veno_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 			/* Slow start.  */
 			tcp_slow_start(tp);
 		} else {
+            /* veno做拥塞避免的策略跟vegas非常像，理解完vegas理解这个就不难了 */
 			/* Congestion avoidance. */
 			if (veno->diff < beta) {
 				/* In the "non-congestive state", increase cwnd
@@ -193,9 +206,11 @@ static u32 tcp_veno_ssthresh(struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct veno *veno = inet_csk_ca(sk);
 
+    /* 当链路排队长度不超过3时，MD=0.8 */
 	if (veno->diff < beta)
 		/* in "non-congestive state", cut cwnd by 1/5 */
 		return max(tp->snd_cwnd * 4 / 5, 2U);
+    /* 当排队长度超过3时，MD=0.5 */
 	else
 		/* in "congestive state", cut cwnd by 1/2 */
 		return max(tp->snd_cwnd >> 1U, 2U);
