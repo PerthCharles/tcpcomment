@@ -17,7 +17,12 @@
 struct hybla {
 	bool  hybla_en;
 	u32   snd_cwnd_cents; /* Keeps increment values when it is <1, <<7 */
+    /* hybla算法用于计算cwnd增长量的关键变量
+     * 看来论文，发现变量名字就是希腊字母，表示的含义是：
+     * normalized round trip time
+     * rho = RTT/RTT0 */
 	u32   rho;	      /* Rho parameter, integer part  */
+    /* 计算rho的三个辅助变量 */
 	u32   rho2;	      /* Rho * Rho, integer part */
 	u32   rho_3ls;	      /* Rho parameter, <<3 */
 	u32   rho2_7ls;	      /* Rho^2, <<7	*/
@@ -31,10 +36,12 @@ MODULE_PARM_DESC(rtt0, "reference rout trip time (ms)");
 
 
 /* This is called to refresh values for hybla parameters */
+/* 更新用于调整cwnd的rho值 */
 static inline void hybla_recalc_param (struct sock *sk)
 {
 	struct hybla *ca = inet_csk_ca(sk);
 
+    /* rho = srtt/rtt0, 其中rtt0是固定的25ms */
 	ca->rho_3ls = max_t(u32, tcp_sk(sk)->srtt / msecs_to_jiffies(rtt0), 8);
 	ca->rho = ca->rho_3ls >> 3;
 	ca->rho2_7ls = (ca->rho_3ls * ca->rho_3ls) << 1;
@@ -52,21 +59,23 @@ static void hybla_init(struct sock *sk)
 	ca->rho2_7ls = 0;
 	ca->snd_cwnd_cents = 0;
 	ca->hybla_en = true;
-	tp->snd_cwnd = 2;
+	tp->snd_cwnd = 2;       /* 这个设置是完全多余的 */
 	tp->snd_cwnd_clamp = 65535;
 
+    /* 这个地方有bug吧，下面这三条语句应该要判断是否有srtt采样才执行吧？ */
 	/* 1st Rho measurement based on initial srtt */
 	hybla_recalc_param(sk);
 
 	/* set minimum rtt as this is the 1st ever seen */
 	ca->minrtt = tp->srtt;
-	tp->snd_cwnd = ca->rho;
+	tp->snd_cwnd = ca->rho;     /* 重新有设置一次拥塞窗口，根据rho的初始值， srtt/25ms */
 }
 
 static void hybla_state(struct sock *sk, u8 ca_state)
 {
 	struct hybla *ca = inet_csk_ca(sk);
 
+    /* 只有状态为Open时，才开启hybla，否则关闭 */
 	ca->hybla_en = (ca_state == TCP_CA_Open);
 }
 
@@ -85,6 +94,10 @@ static inline u32 hybla_fraction(u32 odds)
  *     o Give cwnd a new value based on the model proposed
  *     o remember increments <1
  */
+/* Hybla的计算模型代码注释里面已经解释的很清楚，有时间需要看下论文，
+ * 这个模型是怎么建立起来的
+ * 答：首先先总结出按照标准拥塞控制步骤，cwnd值与建流时间t的关系(不考虑丢包)
+ * 之后就稍微好对应和理解hybla中的算法了 */
 static void hybla_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -109,6 +122,7 @@ static void hybla_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 	if (ca->rho == 0)
 		hybla_recalc_param(sk);
 
+    /* 取小数点后面的精度 */
 	rho_fractions = ca->rho_3ls - (ca->rho << 3);
 
 	if (tp->snd_cwnd < tp->snd_ssthresh) {
@@ -125,6 +139,7 @@ static void hybla_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		 * while we will use hybla_slowstart_fraction_increment() to
 		 * calculate 2^fract in a <<7 value.
 		 */
+        /* 计算慢启动时的cwnd增长量：2^RHO - 1 */ 
 		is_slowstart = 1;
 		increment = ((1 << min(ca->rho, 16U)) *
 			hybla_fraction(rho_fractions)) - 128;
