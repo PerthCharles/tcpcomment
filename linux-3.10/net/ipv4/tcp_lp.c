@@ -5,6 +5,14 @@
  *   the excess network bandwidth as compared to the ``fair share`` of
  *   bandwidth as targeted by TCP.
  *
+ * TODO-DONE: TCP-LP的设计目的和初衷是？
+ * 答：网络中开始区分流的优先级，但这种区分是需要网络中间设备提供的，
+ * 即：高优先级的流的包优先通过
+ * 所以这种优先级的策略一旦网络中间设备不支持，则这类idea则无用武之地。
+ * TCP-LP的提出，就是一种作为end-point来自己感知链路是否有空闲带宽可供自己使用的拥塞控制算法。
+ * 一旦链路出现排队，则主动的降低cwnd
+ * TCP-LP的目的就是做到：achieves low-priority service without the support of the network
+ *
  * As of 2.6.13, Linux supports pluggable congestion control algorithms.
  * Due to the limitation of the API, we take the following changes from
  * the original TCP-LP implementation:
@@ -119,6 +127,8 @@ static void tcp_lp_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 {
 	struct lp *lp = inet_csk_ca(sk);
 
+    /* 只要不处于LP_WITHIN_INF状态，就使用Reno算法；
+     * 否则不做任何处理 */
 	if (!(lp->flag & LP_WITHIN_INF))
 		tcp_reno_cong_avoid(sk, ack, in_flight);
 }
@@ -130,6 +140,7 @@ static void tcp_lp_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
  * We keep on updating the estimated value, where original TCP-LP
  * implementation only guest it for once and use forever.
  */
+/* 通过tcp timestamp信息，更新remote HZ */
 static u32 tcp_lp_remote_hz_estimator(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -147,20 +158,24 @@ static u32 tcp_lp_remote_hz_estimator(struct sock *sk)
 	    tp->rx_opt.rcv_tsecr == lp->local_ref_time)
 		goto out;
 
+    /* m就是通过tcp timestamp选项信息获得的对端HZ的估计 */
 	m = HZ * (tp->rx_opt.rcv_tsval -
 		  lp->remote_ref_time) / (tp->rx_opt.rcv_tsecr -
 					  lp->local_ref_time);
 	if (m < 0)
 		m = -m;
 
+    /* new_rhz = 63/64 old_rhz + 1/64 new_rhz */
 	if (rhz > 0) {
 		m -= rhz >> 6;	/* m is now error in remote HZ est */
 		rhz += m;	/* 63/64 old + 1/64 new */
+    /* 如果rhz <= 0，则意味着这是第一次采样 */
 	} else
 		rhz = m << 6;
 
  out:
 	/* record time for successful remote HZ calc */
+    /* 如果获得了有效的remote HZ，则标记有效 */
 	if ((rhz >> 6) > 0)
 		lp->flag |= LP_VALID_RHZ;
 	else
@@ -183,6 +198,10 @@ static u32 tcp_lp_remote_hz_estimator(struct sock *sk)
  * OWD into zero.
  * It seems to be a bug and so we fixed it.
  */
+/* 计算one way delay，不过要注意这是一个相对值
+ * 如果local跟remote的时钟是同步的，则OWD相当于是local -> remote这个方向的时延
+ * 而即使local跟remote的时钟不是同步的，这个相对值也是有意思的，
+ * 因为即使不同步，但相对值理论是不会变的, 懂？ */
 static u32 tcp_lp_owd_calculator(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -199,6 +218,7 @@ static u32 tcp_lp_owd_calculator(struct sock *sk)
 			owd = -owd;
 	}
 
+    /* 标记是否有效 */
 	if (owd > 0)
 		lp->flag |= LP_VALID_OWD;
 	else
@@ -217,6 +237,7 @@ static u32 tcp_lp_owd_calculator(struct sock *sk)
  *   3. calc smoothed OWD (SOWD).
  * Most ideas come from the original TCP-LP implementation.
  */
+/* 额，rtt值并没有用到，TCP-LP主要依赖tcp timestamp信息 */
 static void tcp_lp_rtt_sample(struct sock *sk, u32 rtt)
 {
 	struct lp *lp = inet_csk_ca(sk);
@@ -279,6 +300,10 @@ static void tcp_lp_pkts_acked(struct sock *sk, u32 num_acked, s32 rtt_us)
 		lp->flag &= ~LP_WITHIN_INF;
 
 	/* test if within threshold */
+    /* TODO-DONE: 这个threshold是什么含义？
+     * 怎么不打上LP_WITHIN_THR标记就要降cwnd呢？
+     * 答：LP_WITHIN_THR是比较当前测量得到的sowd是否超过阈值，
+     * 如果超过，则判定为early congestion indication，故而降低发送速率 */
 	if (lp->sowd >> 3 <
 	    lp->owd_min + 15 * (lp->owd_max - lp->owd_min) / 100)
 		lp->flag |= LP_WITHIN_THR;
@@ -310,6 +335,7 @@ static void tcp_lp_pkts_acked(struct sock *sk, u32 num_acked, s32 rtt_us)
 		tp->snd_cwnd = max(tp->snd_cwnd >> 1U, 1U);
 
 	/* record this drop time */
+    /* 记录降cwnd的时间 */
 	lp->last_drop = tcp_time_stamp;
 }
 
