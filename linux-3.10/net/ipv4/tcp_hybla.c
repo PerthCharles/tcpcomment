@@ -10,6 +10,17 @@
  *    root at danielinux.net
  */
 
+/* hylba算法的的设计初衷：使cwnd的增长与RTT无关
+ * 以慢启动过程为例：若init_cwnd=1， ssthresh=16
+ * 则按照标准算法，4RTT后cwnd会达到ssthresh
+ *
+ * 因此，对于RTT较小的流，能更快的到达ssthresh
+ * 如：rtt=25ms的流，只要100ms；而rtt=100ms的流，则要400ms
+ *
+ * hylba算法的目的就是：不管RTT等于多少，要达到相同的ssthrehs，花费的时间(而不是花费的RTT个数)都一样。
+ * hylba算法采样的参考就是RTT=25ms，即不管RTT等于多少，cwnd增长到相同ssthresh的时间，与rtt=25ms时的一样。
+ */
+
 #include <linux/module.h>
 #include <net/tcp.h>
 
