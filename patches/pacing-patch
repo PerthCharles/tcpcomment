@@ -1,0 +1,109 @@
+commit 43e122b014c955a33220fabbd09c4b5e4f422c3c
+    tcp: refine pacing rate determination
+    When TCP pacing was added back in linux-3.12, we chose
+--
+commit fad9dfefea6405039491e7e4fc21fb6e59e7d26c
+    Use READ_ONCE() to fetch sk_pacing_rate and sk_max_pacing_rate
+    Fixes: 977cb0ecf82e ("tcp: add pacing_rate information into tcp_info")
+--
+commit 5f852eb536ad651b8734559dcf4353514cb0bea3
+    We've used this patch for about two years at Google, before FQ/pacing
+--
+commit 9878196578286c5ed494778ada01da094377a686
+    When we added pacing to TCP, we decided to let sch_fq take care
+    of actual pacing.
+    All TCP had to do was to compute sk->pacing_rate using simple formula:
+    sk->pacing_rate = 2 * cwnd * mss / rtt
+    can end up pacing ACK packets, slowing down the sender.
+--
+commit bdbbb8527b6f6a358dbcb70dac247034d665b8e4
+    commit 811230cd85 ("tcp: ipv4: initialize unicast_sock sk_pacing_rate")
+--
+commit 811230cd853d62f09ed0addd0ce9a1b9b0e13fb5
+    tcp: ipv4: initialize unicast_sock sk_pacing_rate
+    When I added sk_pacing_rate field, I forgot to initialize its value
+--
+commit 42eef7a0bb0989cd50d74e673422ff98a0ce4d7b
+     80 ms RTT between peers, FQ/pacing packet scheduler on sender.
+commit 6e3a8a937c2f86ee0b2d354808fc026a143b4518
+    When deploying FQ pacing, one thing we noticed is that CUBIC Hystart
+--
+commit d649a7a81f3b5bacb1d60abd7529894d8234a666
+    big, as sk_pacing_rate is high.
+--
+commit 450834977796cc74d1265d7dfe69cf6767537dfc
+    Neaten the arithmetic spacing to be consistent with other
+    arithmetic spacing in the files.
+--
+commit 9b462d02d6dd671a9ebdc45caed6fe98a53c0ebe
+    lpaa23:~# ./super_netperf 1400 --google-pacing-rate 3028000 -H lpaa24 -l 3600 &
+--
+commit e3118e8359bb7c59555aca60c725106e6d78c5ce
+      send 10129.2Mbps pacing_rate 20254.1Mbps unacked:1822 retrans:0/15
+      cwnd:10 ssthresh:1102 fallback_mode send 162.9Mbps pacing_rate
+--
+commit 688d1945bc89bd585ec67b5b83121f499e6290bb
+    awkward if(){, double spacing etc. Add blank line after declaration/initialization.
+--
+commit 5924f17a8a30c2ae18d034a86ee7581b34accef6
+    "magic" with netem, sk_pacing and limit_output_bytes is done to prevent
+--
+commit e114a710aa5058c0ba4aa1dfb105132aefeb5e04
+    With TCP Small Queues and FQ/pacing, this issue is more visible.
+--
+commit 740b0f1841f6e39085b711d41db9ffb07198682b
+    FQ/pacing in DC environments also require this change for finer control
+    tcp_update_pacing_rate() for 'small rtt'
+    3620.0Mbps pacing_rate 7240.0Mbps unacked:1 rcv_rtt:993 rcv_space:29559
+--
+commit 977cb0ecf82eb6d15562573c31edebf90db35163
+    tcp: add pacing_rate information into tcp_info
+    Add two new fields to struct tcp_info, to report sk_pacing_rate
+    and sk_max_pacing_rate to monitoring applications, as ss from iproute2.
+    13.2Mbps pacing_rate 3336.2Mbps unacked:15 retrans:1/5448 lost:15
+--
+commit 4a5ab4e224288403b0b4b6b8c4d339323150c312
+    TCP pacing depends on an accurate srtt estimation.
+    slowdowns when FQ/pacing is used, especially in DC world,
+--
+commit f54b311142a92ea2e42598e347b84e1655caf8e3
+    pacing, we can implement Automatic Corking in the kernel, to help
+    Using FQ/pacing is a way to increase the probability of
+--
+commit 1ee2dcc2245340cf4ac94b99c4d00efbeba61824
+    16) Fix small frame pacing in FQ packet scheduler, from Eric Dumazet.
+--
+commit 02cf4ebd82ff0ac7254b88e466820a290ed8289a
+    tcp: initialize passive-side sk_pacing_rate after 3WHS
+    3WHS, make sure we set our pacing rate after we get our first RTT
+    3WHS, tcp_ack() leaves sk_pacing_rate at its initial value.
+    Originally the initial sk_pacing_rate value was 0, so passive-side
+    Since 7eec4174ff ("pkt_sched: fq: fix non TCP flows pacing"), the
+    initial sk_pacing_rate is 0xffffffff. So after that change, passive
+--
+commit ba537427d77cf274592f31ce94f4b4cadfad88b4
+    tcp: use ACCESS_ONCE() in tcp_update_pacing_rate()
+    sk_pacing_rate is read by sch_fq packet scheduler at any time,
+--
+commit c9eeec26e32e087359160406f96e0949b3cc6f10
+    Now TCP stack has rate estimation in sk->sk_pacing_rate, and TSO
+    Example for a single flow on 10Gbp link controlled by FQ/pacing
+    Note that sk_pacing_rate is currently set to twice the actual rate, but
+--
+commit 62748f32d501f5d3712a7c372bbb92abc7c62bc7
+    net: introduce SO_MAX_PACING_RATE
+    SO_MAX_PACING_RATE offers the application the ability to cap the
+    setsockopt(sockfd, SOL_SOCKET, SO_MAX_PACING_RATE, &val, sizeof(val));
+    I chose to make this pacing rate a SOL_SOCKET option instead of a
+--
+commit 1b7fdd2ab5852717a4fc7d79847759c67065d7e9
+    other components (e.g., pacing) require the smooth RTT to be obtained
+--
+
+
+
+commit 95bd09eb27507691520d39ee1044d6ad831c1168
+    This patch introduces a per socket sk_pacing_rate, that approximates
+    sk_pacing_rate as an input to perform optional per flow pacing.
+    This explains why we chose to set sk_pacing_rate to twice the current
+    sk_pacing_rate = 2 * cwnd * mss / srtt
