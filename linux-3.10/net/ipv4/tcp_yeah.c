@@ -6,6 +6,10 @@
  *    http://wil.cs.caltech.edu/pfldnet2007/paper/YeAH_TCP.pdf
  *
  */
+
+/* YeAH: Yet Another Highspeed TCP
+ * 计算机行当里面，这个Yet Another也太烂大街了吧 */
+
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/skbuff.h>
@@ -17,6 +21,7 @@
 
 #define TCP_YEAH_ALPHA       80 //lin number of packets queued at the bottleneck
 #define TCP_YEAH_GAMMA        1 //lin fraction of queue to be removed per rtt
+/* 发生丢包时，限制cwnd至少降低 cwnd >> DELTA, 即1/8 */
 #define TCP_YEAH_DELTA        3 //log minimum fraction of cwnd to be removed on loss
 #define TCP_YEAH_EPSILON      1 //log maximum fraction to be removed on early decongestion
 #define TCP_YEAH_PHY          8 //lin maximum delta from base
@@ -26,15 +31,19 @@
 #define TCP_SCALABLE_AI_CNT	 100U
 
 /* YeAH variables */
+/* 看着这结构体，就知道YeAH是一个基于vegas的算法 */
 struct yeah {
 	struct vegas vegas;	/* must be first */
 
 	/* YeAH */
-	u32 lastQ;
-	u32 doing_reno_now;
+	u32 lastQ;          /* 记录上一个RTT计算得到的瓶颈链路排队长度 */
+	u32 doing_reno_now;     /* 非零表示需要改用reno算法调整cwnd, 具体值表示已经转用reno算法的RTT周期数 */
 
-	u32 reno_count;
-	u32 fast_count;
+	u32 reno_count;     /* 如果使用reno算法，会得到的cwnd值 */
+    /* 未使用reno算法，即使用比reno更快的算法，增加cwnd的次数，且期间一直在Open状态
+     * 当达到TCP_YEAD_ZETA个数后，
+     * 可以认为使用更快的算法也没有产生问题，从而认为reno_count已经不适用了，需要被reset */
+	u32 fast_count;     
 
 	u32 pkts_acked;
 };
@@ -63,9 +72,11 @@ static void tcp_yeah_pkts_acked(struct sock *sk, u32 pkts_acked, s32 rtt_us)
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 	struct yeah *yeah = inet_csk_ca(sk);
 
+    /* yeah->pkts_acked 记录Open状态下，最近的一个ACK所确认的数据量 */
 	if (icsk->icsk_ca_state == TCP_CA_Open)
 		yeah->pkts_acked = pkts_acked;
 
+    /* rtt采样的部分，yeah算法交给vegas算法去做 */
 	tcp_vegas_pkts_acked(sk, pkts_acked, rtt_us);
 }
 
@@ -80,9 +91,11 @@ static void tcp_yeah_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 	if (tp->snd_cwnd <= tp->snd_ssthresh)
 		tcp_slow_start(tp);
 
+    /* doing_reno_now为0，表示使用更快的方式增长cwnd也没有导致拥塞 */
 	else if (!yeah->doing_reno_now) {
 		/* Scalable */
 
+        /* 起始yeah也不没有多块，只是使用TCP_SCALABLE_AI_CNT来取了一个min值 */
 		tp->snd_cwnd_cnt += yeah->pkts_acked;
 		if (tp->snd_cwnd_cnt > min(tp->snd_cwnd, TCP_SCALABLE_AI_CNT)){
 			if (tp->snd_cwnd < tp->snd_cwnd_clamp)
@@ -93,6 +106,7 @@ static void tcp_yeah_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		yeah->pkts_acked = 1;
 
 	} else {
+        /* 如果使用更快的策略，出现了快要拥塞的状态，因而就需要换成reno算法了 */
 		/* Reno */
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd);
 	}
@@ -119,6 +133,7 @@ static void tcp_yeah_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 	 * So we keep track of our cwnd separately, in v_beg_snd_cwnd.
 	 */
 
+    /* 一个RTT更新一次 */
 	if (after(ack, yeah->vegas.beg_snd_nxt)) {
 
 		/* We do the Vegas calculations only if we got enough RTT
@@ -150,23 +165,35 @@ static void tcp_yeah_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 			/* Compute excess number of packets above bandwidth
 			 * Avoid doing full 64 bit divide.
 			 */
+            /* queue值就是计算出来的在瓶颈链路中的排队长度 */
 			bw = tp->snd_cwnd;
 			bw *= rtt - yeah->vegas.baseRTT;
 			do_div(bw, rtt);
 			queue = bw;
 
+            /* 如果瓶颈链路的排队长度超过80 -- 看看这比vegas激进多了，而且我觉得合理!
+             * 或者rtt的变化超过了baseRTT的1/8，则认为已经快要拥塞了 */
 			if (queue > TCP_YEAH_ALPHA ||
 			    rtt - yeah->vegas.baseRTT > (yeah->vegas.baseRTT / TCP_YEAH_PHY)) {
+
+                /* 如果排队长度过长，则可以马上要拥塞了应该降低cwnd来避免真正的拥塞
+                 *      -- 也就是原注释中提到的early decongestion策略
+                 * 并且cwnd确实已经比reno算法得到的cwnd值大了，从而会降低cwnd
+                 */
 				if (queue > TCP_YEAH_ALPHA &&
 				    tp->snd_cwnd > yeah->reno_count) {
+                    /* 理论上应该将queue排空，reduction应该是queue值，
+                     * 但这里也会限制最多降低cwnd的一半， 避免降的太多 */
 					u32 reduction = min(queue / TCP_YEAH_GAMMA ,
 							    tp->snd_cwnd >> TCP_YEAH_EPSILON);
 
 					tp->snd_cwnd -= reduction;
 
+                    /* cwnd虽然要降低，但限制不应该降的低于reno算法 */
 					tp->snd_cwnd = max(tp->snd_cwnd,
 							   yeah->reno_count);
 
+                    /* 设置慢启动阈值为cwnd，总而能推出慢启动过程，进入拥塞避免阶段 */
 					tp->snd_ssthresh = tp->snd_cwnd;
 				}
 
@@ -175,11 +202,13 @@ static void tcp_yeah_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 				else
 					yeah->reno_count++;
 
+                /* 既然判断出快要拥塞了，增加应该使用reno算法的权重 */
 				yeah->doing_reno_now = min(yeah->doing_reno_now + 1,
 							   0xffffffU);
 			} else {
 				yeah->fast_count++;
 
+                /* 已经50次使用更快的方式增长cwnd了，也没有导致进入快速恢复状态，故认为reno_count不太适用，该重置了 */
 				if (yeah->fast_count > TCP_YEAH_ZETA) {
 					yeah->reno_count = 2;
 					yeah->fast_count = 0;
@@ -188,6 +217,7 @@ static void tcp_yeah_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 				yeah->doing_reno_now = 0;
 			}
 
+            /* 当一个RTT结束时，使用lastQ记录瓶颈链路的排队长度 */
 			yeah->lastQ = queue;
 
 		}
@@ -211,16 +241,20 @@ static u32 tcp_yeah_ssthresh(struct sock *sk) {
 	u32 reduction;
 
 	if (yeah->doing_reno_now < TCP_YEAH_RHO) {
+        /* 发生丢包时，理论上应该将瓶颈链路排队排空，因此reduction等于lastQ */
 		reduction = yeah->lastQ;
 
+        /* 限制最多降一半 */
 		reduction = min( reduction, max(tp->snd_cwnd>>1, 2U) );
 
+        /* 限制至少降1/8 */
 		reduction = max( reduction, tp->snd_cwnd >> TCP_YEAH_DELTA);
 	} else
+    /* 如果转用reno算法的RTT周期数超过16，则认为这次丢包比较严重了，需要将cwnd多降点 */
 		reduction = max(tp->snd_cwnd>>1, 2U);
 
-	yeah->fast_count = 0;
-	yeah->reno_count = max(yeah->reno_count>>1, 2U);
+	yeah->fast_count = 0;   /* 发生丢包后，将fast_count重置 */
+	yeah->reno_count = max(yeah->reno_count>>1, 2U);    /* 重置reno值 */
 
 	return tp->snd_cwnd - reduction;
 }
