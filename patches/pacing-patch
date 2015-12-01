@@ -95,11 +95,6 @@ commit 62748f32d501f5d3712a7c372bbb92abc7c62bc7
     SO_MAX_PACING_RATE offers the application the ability to cap the
     setsockopt(sockfd, SOL_SOCKET, SO_MAX_PACING_RATE, &val, sizeof(val));
     I chose to make this pacing rate a SOL_SOCKET option instead of a
---
-commit 1b7fdd2ab5852717a4fc7d79847759c67065d7e9
-    other components (e.g., pacing) require the smooth RTT to be obtained
---
-
 
 
 commit 95bd09eb27507691520d39ee1044d6ad831c1168
