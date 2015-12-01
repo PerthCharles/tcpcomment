@@ -2754,6 +2754,7 @@ void netif_stacked_transfer_operstate(const struct net_device *rootdev,
 
 netdev_features_t netif_skb_features(struct sk_buff *skb);
 
+/* 判断gso_type类型的feature是否支持 */
 static inline bool net_gso_ok(netdev_features_t features, int gso_type)
 {
 	netdev_features_t feature = gso_type << NETIF_F_GSO_SHIFT;

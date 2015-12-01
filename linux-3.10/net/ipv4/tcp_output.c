@@ -988,6 +988,13 @@ static void tcp_queue_skb(struct sock *sk, struct sk_buff *skb)
 static void tcp_set_skb_tso_segs(const struct sock *sk, struct sk_buff *skb,
 				 unsigned int mss_now)
 {
+    /* 有以下情况不需要分片
+     * 1. 数据的长度小于MSS
+     * 2. 网卡不支持GSO
+     * 3. 网卡不支持重新计算校验和
+     *      -- 要想支持TSO，必须要支持校验和计算，因为将一个大skb拆分
+     *         成多个小tcp segments时，是需要重新为这些tcp segment计算校验和的
+     */
 	if (skb->len <= mss_now || !sk_can_gso(sk) ||
 	    skb->ip_summed == CHECKSUM_NONE) {
 		/* Avoid the costly divide in the normal
@@ -997,6 +1004,7 @@ static void tcp_set_skb_tso_segs(const struct sock *sk, struct sk_buff *skb,
 		skb_shinfo(skb)->gso_size = 0;
 		skb_shinfo(skb)->gso_type = 0;
 	} else {
+        /* 满足使用TSO的条件，则计算好gso_segs和gso_size */
 		skb_shinfo(skb)->gso_segs = DIV_ROUND_UP(skb->len, mss_now);
 		skb_shinfo(skb)->gso_size = mss_now;
 		skb_shinfo(skb)->gso_type = sk->sk_gso_type;
@@ -1437,12 +1445,16 @@ static inline unsigned int tcp_cwnd_test(const struct tcp_sock *tp,
  * This must be invoked the first time we consider transmitting
  * SKB onto the wire.
  */
+/* 初始化一个skb中关于tso的信息，返回值是这个skb包含的数据段的个数 */
 static int tcp_init_tso_segs(const struct sock *sk, struct sk_buff *skb,
 			     unsigned int mss_now)
 {
+    /* 对于TCP协议而言，GSO就是TSO */
 	int tso_segs = tcp_skb_pcount(skb);
 
+    /* 如果未分片，或者进行了分片但大小不是mss_now，则要进一步处理 */
 	if (!tso_segs || (tso_segs > 1 && tcp_skb_mss(skb) != mss_now)) {
+        /* 重新计算gso_size和gso_segs */
 		tcp_set_skb_tso_segs(sk, skb, mss_now);
 		tso_segs = tcp_skb_pcount(skb);
 	}

@@ -358,7 +358,7 @@ struct sock {
 	netdev_features_t	sk_route_caps;
 	netdev_features_t	sk_route_nocaps;
 	int			sk_gso_type;
-	unsigned int		sk_gso_max_size;
+	unsigned int		sk_gso_max_size;        /* GSO机制能处理的最大的segment大小，一般为64KB */
 	u16			sk_gso_max_segs;
 	int			sk_rcvlowat;
 	unsigned long	        sk_lingertime;
@@ -1784,8 +1784,11 @@ extern struct dst_entry *__sk_dst_check(struct sock *sk, u32 cookie);
 
 extern struct dst_entry *sk_dst_check(struct sock *sk, u32 cookie);
 
+/* 判断网卡是否支持GSO，支持返回true */
 static inline bool sk_can_gso(const struct sock *sk)
 {
+    /* sk_route_caps标记网卡驱动的特征，sk_gso_type标记GSO的类型
+     * 对于TCP ipv4协议设置sk_gso_type为SKB_GSO_TCPV4 */
 	return net_gso_ok(sk->sk_route_caps, sk->sk_gso_type);
 }
 

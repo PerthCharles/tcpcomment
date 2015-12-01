@@ -260,11 +260,11 @@ struct ubuf_info {
 struct skb_shared_info {
 	unsigned char	nr_frags;
 	__u8		tx_flags;
-	unsigned short	gso_size;
+	unsigned short	gso_size;       /* 每个数据段的大小 */
 	/* Warning: this field is not always filled in (UFO)! */
-	unsigned short	gso_segs;
-	unsigned short  gso_type;
-	struct sk_buff	*frag_list;
+	unsigned short	gso_segs;       /* skb被分割成多少个数据段 */
+	unsigned short  gso_type;       
+	struct sk_buff	*frag_list;     /* 分割后的数据段列表 */
 	struct skb_shared_hwtstamps hwtstamps;
 	__be32          ip6_frag_id;
 

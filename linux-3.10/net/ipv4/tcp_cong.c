@@ -311,12 +311,26 @@ bool tcp_is_cwnd_limited(const struct sock *sk, u32 in_flight)
 		return true;
 
 	left = tp->snd_cwnd - in_flight;
-    /* TODO: GSO相关内容 */
+    /* TODO-DONE: GSO相关内容 */
+    /* 如果开启了gso功能，
+     * 并且剩余的cwnd量不超过一个GSO skb允许占用的最大的cwnd量
+     *      -- 如果超过则说明一定不是GSO限制的cwnd未用完。
+     *      -- 如果不超过则说明可能是由于GSO导致的left没用完，cwnd存在被充分利用的可能，需要进一步判断
+     * 并且剩余的cwnd量*mss 也没有超过GSO机制一次能处理的最大量
+     *      -- 如果超过，则说明GSO肯定没有限制cwnd
+     * 并且剩余的cwnd量不超过GSO机制允许的最大segs数
+     *
+     * 综合以上判断，则认为cwnd未用完是由于GSO导致的，那么本质上cwnd是被充分利用了的，故应该返回true，增加cwnd
+     */
 	if (sk_can_gso(sk) &&
+        /* sysctl_tcp_tso_win_divisor表示一个GSO skb最多能消耗多少的cwnd量，
+         * 默认为3，表示一个GSO skb最多能占用cwnd窗口的1/3 */
 	    left * sysctl_tcp_tso_win_divisor < tp->snd_cwnd &&
 	    left * tp->mss_cache < sk->sk_gso_max_size &&
 	    left < sk->sk_gso_max_segs)
 		return true;
+    /* 如果cwnd剩余量小于3，也认为cwnd是被充分利用的
+     * 这是由于在未使用sysctl_tcp_tso_win_divisor时，TSO机制最多会延迟3个MSS数据的发送 */
 	return left <= tcp_max_tso_deferred_mss(tp);
 }
 EXPORT_SYMBOL_GPL(tcp_is_cwnd_limited);
