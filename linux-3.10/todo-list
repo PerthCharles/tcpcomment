@@ -1,7 +1,7 @@
 [X] tcp_westwood.c
 [X] tcp_veno.c
 [X] tcp_hybla.c
-tcp_illinois.c
+[X] tcp_illinois.c
 [X] tcp_lp.c
 [X] tcp_yeah.c
 

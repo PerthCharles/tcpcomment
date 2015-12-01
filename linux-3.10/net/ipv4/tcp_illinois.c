@@ -11,6 +11,8 @@
  * Implemented from description in paper and ns-2 simulation.
  * Copyright (C) 2007 Stephen Hemminger <shemminger@linux-foundation.org>
  */
+/* Illinois算法同时使用delay信息和loss信息，
+ * 使用delay信息决定AIMD的关键参数值；使用loss来作为调整cwnd的方向 */
 
 #include <linux/module.h>
 #include <linux/skbuff.h>
@@ -70,8 +72,8 @@ static void tcp_illinois_init(struct sock *sk)
 {
 	struct illinois *ca = inet_csk_ca(sk);
 
-	ca->alpha = ALPHA_MAX;
-	ca->beta = BETA_BASE;
+	ca->alpha = ALPHA_MAX;      /* 10 */
+	ca->beta = BETA_BASE;       /* 0.5 */
 	ca->base_rtt = 0x7fffffff;
 	ca->max_rtt = 0;
 
@@ -87,6 +89,7 @@ static void tcp_illinois_acked(struct sock *sk, u32 pkts_acked, s32 rtt)
 {
 	struct illinois *ca = inet_csk_ca(sk);
 
+    /* 记录被当前ACK确认的字节数 */
 	ca->acked = pkts_acked;
 
 	/* dup ack, no rtt sample */
@@ -94,6 +97,7 @@ static void tcp_illinois_acked(struct sock *sk, u32 pkts_acked, s32 rtt)
 		return;
 
 	/* ignore bogus values, this prevents wraparound in alpha math */
+    /* illinois里面rtt的最大值是3.3s */
 	if (rtt > RTT_MAX)
 		rtt = RTT_MAX;
 
@@ -110,12 +114,14 @@ static void tcp_illinois_acked(struct sock *sk, u32 pkts_acked, s32 rtt)
 }
 
 /* Maximum queuing delay */
+/* 最大的queuing delay，据此一定程度可推测出瓶颈链路buffer的大小 */
 static inline u32 max_delay(const struct illinois *ca)
 {
 	return ca->max_rtt - ca->base_rtt;
 }
 
 /* Average queuing delay */
+/* 平均的排队时延，用于了解瓶颈链路的平均使用情况 */
 static inline u32 avg_delay(const struct illinois *ca)
 {
 	u64 t = ca->sum_rtt;
@@ -136,10 +142,14 @@ static inline u32 avg_delay(const struct illinois *ca)
  *
  * The result is a convex window growth curve.
  */
+/* 参数含义：
+ *  da: delay average
+ *  dm: delay max */
 static u32 alpha(struct illinois *ca, u32 da, u32 dm)
 {
 	u32 d1 = dm / 100;	/* Low threshold */
 
+    /* 如果avg_rtt小于 max_rtt的1%, 那么说明基本都是不拥塞的状态 */
 	if (da <= d1) {
 		/* If never got out of low delay zone, then use max */
 		if (!ca->rtt_above)
@@ -148,6 +158,8 @@ static u32 alpha(struct illinois *ca, u32 da, u32 dm)
 		/* Wait for 5 good RTT's before allowing alpha to go alpha max.
 		 * This prevents one good RTT from causing sudden window increase.
 		 */
+        /* 等5个表现良好的RTT，才开始重新使用ALPHA_MAX
+         * 但是这样的话，这5个好的RTT采样也就同样被丢弃了，不会更新alpha */
 		if (++ca->rtt_low < theta)
 			return ca->alpha;
 
@@ -174,8 +186,13 @@ static u32 alpha(struct illinois *ca, u32 da, u32 dm)
 	 *          k2 + da
 	 */
 
-	dm -= d1;
-	da -= d1;
+	dm -= d1;   /* dm = 99% dm */
+	da -= d1;   /* da = da - 1% dm */
+
+    /* 计算公式就是上面注释些的那样，整理一下就明白了 */
+    /* 至于为什么是这个样子，去看一下Illinois论文中，alpha和beta与da的函数关系图就大概了解了
+     * 不过感觉Illinois里面选择的C-AIMD原则的曲线选的不是那么decent，beta还好，是直线平移的结果，
+     * 但alpha却不是。 */
 	return (dm * ALPHA_MAX) /
 		(dm + (da  * (ALPHA_MAX - ALPHA_MIN)) / ALPHA_MIN);
 }
@@ -193,10 +210,14 @@ static u32 beta(u32 da, u32 dm)
 	u32 d2, d3;
 
 	d2 = dm / 10;
+    /* 如果avg_rtt <= 10% max_rtt，则beta = 1/8 */
+    /* 这是第二个感觉Illinois不够decent的地方，beta和alpha对于max_rtt边界的选择竟然不一样 */
 	if (da <= d2)
 		return BETA_MIN;
 
 	d3 = (8 * dm) / 10;
+    /* 如果avg_rtt >= 80%的max_rtt，则beta = 1/2 
+     * 或者80%max_rtt <= 10%max_rtt, 说明max_rtt太小了，也设置beta=1/2 */
 	if (da >= d3 || d3 <= d2)
 		return BETA_MAX;
 
@@ -223,9 +244,11 @@ static void update_params(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct illinois *ca = inet_csk_ca(sk);
 
+    /* 如果窗口小于15，则使用reno一样的参数 */
 	if (tp->snd_cwnd < win_thresh) {
 		ca->alpha = ALPHA_BASE;
 		ca->beta = BETA_BASE;
+    /* 如果获得了有效的rtt采样，则可以更新相关参数 */
 	} else if (ca->cnt_rtt > 0) {
 		u32 dm = max_delay(ca);
 		u32 da = avg_delay(ca);
@@ -234,6 +257,7 @@ static void update_params(struct sock *sk)
 		ca->beta = beta(da, dm);
 	}
 
+    /* 一个RTT结束后，重置采样 */
 	rtt_reset(sk);
 }
 
@@ -261,6 +285,7 @@ static void tcp_illinois_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct illinois *ca = inet_csk_ca(sk);
 
+    /* 一个RTT结束后，更新采样 */
 	if (after(ack, ca->end_seq))
 		update_params(sk);
 
@@ -282,6 +307,7 @@ static void tcp_illinois_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		/* This is close approximation of:
 		 * tp->snd_cwnd += alpha/tp->snd_cwnd
 		*/
+        /* 一个RTT，将cwnd增长alpha */
 		delta = (tp->snd_cwnd_cnt * ca->alpha) >> ALPHA_SHIFT;
 		if (delta >= tp->snd_cwnd) {
 			tp->snd_cwnd = min(tp->snd_cwnd + delta / tp->snd_cwnd,
@@ -291,6 +317,7 @@ static void tcp_illinois_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 	}
 }
 
+/* 当发生丢包时，将慢启动阈值设置为(1-beta)*cwnd */
 static u32 tcp_illinois_ssthresh(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
