@@ -2,6 +2,12 @@ commit 95bd09eb27507691520d39ee1044d6ad831c1168
 Author: Eric Dumazet <edumazet@google.com>
 Date:   Tue Aug 27 05:46:32 2013 -0700
 
+    /* 关于TSO的相关知识可查看以下几篇wiki：
+     * https://en.wikipedia.org/wiki/Large_segment_offload
+     * https://en.wikipedia.org/wiki/Large_receive_offload
+     * https://en.wikipedia.org/wiki/TCP_offload_engine
+     * 一句话简单来说就是：将本该由tcp做的事情交给NIC去做
+     */
     tcp: TSO packets automatic sizing
     
     After hearing many people over past years complaining against TSO being
@@ -230,6 +236,7 @@ index ec492ea..1a84fff 100644
  
  	if (icsk->icsk_pending == ICSK_TIME_RETRANS)
  		tcp_schedule_loss_probe(sk);
+    /* 一旦rtt或者cwnd发生变化，则需要更新pacing */
 +	if (tp->srtt != prior_rtt || tp->snd_cwnd != prior_cwnd)
 +		tcp_update_pacing_rate(sk);
  	return 1;
