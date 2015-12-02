@@ -1615,6 +1615,8 @@ static int tso_fragment(struct sock *sk, struct sk_buff *skb, unsigned int len,
  *
  * This algorithm is from John Heffner.
  */
+/* 判断是否应该延迟数据的发送，来减少TSO分段的次数，从而减小CPU负载
+ * 返回1表示要defer */
 static bool tcp_tso_should_defer(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -1622,13 +1624,16 @@ static bool tcp_tso_should_defer(struct sock *sk, struct sk_buff *skb)
 	u32 send_win, cong_win, limit, in_flight;
 	int win_divisor;
 
+    /* 如果带FIN标记，则应该马上发送 */
 	if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN)
 		goto send_now;
 
+    /* 如果是处于Open状态，则马上发送 */
 	if (icsk->icsk_ca_state != TCP_CA_Open)
 		goto send_now;
 
 	/* Defer for less than two clock ticks. */
+    /* tso_deferred最多延迟2ms */
 	if (tp->tso_deferred &&
 	    (((u32)jiffies << 1) >> 1) - (tp->tso_deferred >> 1) > 1)
 		goto send_now;
@@ -1637,30 +1642,38 @@ static bool tcp_tso_should_defer(struct sock *sk, struct sk_buff *skb)
 
 	BUG_ON(tcp_skb_pcount(skb) <= 1 || (tp->snd_cwnd <= in_flight));
 
+    /* 通告窗口的剩余大小，字节数 */
 	send_win = tcp_wnd_end(tp) - TCP_SKB_CB(skb)->seq;
 
 	/* From in_flight test above, we know that cwnd > in_flight.  */
+    /* 拥塞窗口剩余大小，字节数 */
 	cong_win = (tp->snd_cwnd - in_flight) * tp->mss_cache;
 
+    /* 取min作为发送限制 */
 	limit = min(send_win, cong_win);
 
 	/* If a full-sized TSO skb can be sent, do it. */
+    /* sk_gso_max_size一般是64kb */
 	if (limit >= min_t(unsigned int, sk->sk_gso_max_size,
 			   sk->sk_gso_max_segs * tp->mss_cache))
 		goto send_now;
 
 	/* Middle in queue won't get any more data, full sendable already? */
+    /* 如果skb不位于队尾，则它的长度不会更改了，故只要limit允许发送就应该立即发送 */
 	if ((skb != tcp_write_queue_tail(sk)) && (limit >= skb->len))
 		goto send_now;
 
 	win_divisor = ACCESS_ONCE(sysctl_tcp_tso_win_divisor);
+    /* 如果设置了sysctl_tcp_tso_win_divisor，
+     * 如果有超过chunk/win_divisor的剩余空间，则应该立即发送数据 */
 	if (win_divisor) {
+        /* 一个RTT内允许发送的字节数 */
 		u32 chunk = min(tp->snd_wnd, tp->snd_cwnd * tp->mss_cache);
 
 		/* If at least some fraction of a window is available,
 		 * just use it.
 		 */
-		chunk /= win_divisor;
+		chunk /= win_divisor;   /* 单个TSO段允许的最大发送量，如果limit超过这个值，则也是可以立即发送的 */
 		if (limit >= chunk)
 			goto send_now;
 	} else {
@@ -1669,6 +1682,8 @@ static bool tcp_tso_should_defer(struct sock *sk, struct sk_buff *skb)
 		 * frame, so if we have space for more than 3 frames
 		 * then send now.
 		 */
+        /* 如果没有配置sysctl_tcp_tso_win_divisor，则TSO最多defer3个数据包的发送
+         * 如果limit超过了这个值，则也应该立即发送 */
 		if (limit > tcp_max_tso_deferred_mss(tp) * tp->mss_cache)
 			goto send_now;
 	}
@@ -1676,6 +1691,7 @@ static bool tcp_tso_should_defer(struct sock *sk, struct sk_buff *skb)
 	/* Ok, it looks like it is advisable to defer.
 	 * Do not rearm the timer if already set to not break TCP ACK clocking.
 	 */
+    /* tso_defered被设置为单数 */
 	if (!tp->tso_deferred)
 		tp->tso_deferred = 1 | (jiffies << 1);
 
@@ -1880,6 +1896,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 						      nonagle : TCP_NAGLE_PUSH))))
 				break;
 		} else {
+            /* 如果该skb启用的TSO，则需要判断是否应该延迟该数据包的发送 */
 			if (!push_one && tcp_tso_should_defer(sk, skb))
 				break;
 		}

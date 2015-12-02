@@ -247,7 +247,7 @@ struct tcp_sock {
     /* 被SACKED的数据段的个数，如果SACK选项不开，则是dupack的个数 */
 	u32	sacked_out;	/* SACK'd packets			*/
 	u32	fackets_out;	/* FACK'd packets			*/
-	u32	tso_deferred;
+	u32	tso_deferred;       /* 上次TSO延迟发送的时间戳, 也用作判断是否已经执行了TSO defer */
 
 	/* from STCP, retrans queue hinting */
 	struct sk_buff* lost_skb_hint;
