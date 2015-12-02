@@ -1475,6 +1475,15 @@ static inline bool tcp_minshall_check(const struct tcp_sock *tp)
  * 4. Or TCP_CORK is not set, and all sent packets are ACKed.
  *    With Minshall's modification: all sent small packets are ACKed.
  */
+/* 上面的注释非常准确, 也非常易读就不直接解释了
+ * 下面翻过来总结一下内核会限制发送小包需要满足的条件：
+ * 1. 此skb是发送队列的最后一个包   -- 这样它才可能由于应用层有新数据要发而增长
+ * 2. 发送的不是紧急数据，也不带FIN标记
+ * 3. skb的大小小于mss_now          -- 不是满负荷的
+ * 4. 设置了TCP_CORK
+ *    或者没有设置TCP_CORK，但也没有设置TCP_NODELAY，同时网络中存在未被确认的数据
+ *
+ * 可见Nagle被使用的条件是比较苛刻的, 所以一般都是unlikely */
 static inline bool tcp_nagle_check(const struct tcp_sock *tp,
 				  const struct sk_buff *skb,
 				  unsigned int mss_now, int nonagle)
@@ -1496,6 +1505,8 @@ static inline bool tcp_nagle_test(const struct tcp_sock *tp, const struct sk_buf
 	 * This is implemented in the callers, where they modify the 'nonagle'
 	 * argument based upon the location of SKB in the send queue.
 	 */
+    /* 如果skb不是队尾的，那么nonagle参数会强制设置为TCP_NAGLE_PUSH
+     * 从而该skb不会受到限制, 能立即发送出去 */
 	if (nonagle & TCP_NAGLE_PUSH)
 		return true;
 

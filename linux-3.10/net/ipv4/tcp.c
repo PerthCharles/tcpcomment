@@ -2417,6 +2417,9 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 		tp->rx_opt.user_mss = val;
 		break;
 
+    /* Nagle算法是通过凑够一个MSS，来减少发送数据包的个数来提高带宽利用率的；
+     * 但是它会增加延迟。如果设置TCP_NODELAY选项，则禁用Nagle算法
+     * 但要注意的是Nagle算法是等待一个固定MSS长度, 且最多等待200ms */
 	case TCP_NODELAY:
 		if (val) {
 			/* TCP_NODELAY is weaker than TCP_CORK, so that
@@ -2426,8 +2429,11 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 			 * However, when TCP_NODELAY is set we make
 			 * an explicit push, which overrides even TCP_CORK
 			 * for currently queued segments.
+			 * TODO: 弄明白这个TCP_NAGLE_PUSH的具体含义
+			 *  -- 原始注释：Cork is overridden for already queued data 
 			 */
 			tp->nonagle |= TCP_NAGLE_OFF|TCP_NAGLE_PUSH;
+            /* 这个地方立即调用函数发送数据 */
 			tcp_push_pending_frames(sk);
 		} else {
 			tp->nonagle &= ~TCP_NAGLE_OFF;
@@ -2509,6 +2515,24 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 		 * TCP_CORK can be set together with TCP_NODELAY and it is
 		 * stronger than TCP_NODELAY.
 		 */
+        /* TCP_CORK的优先级比TCP_NODELAY的优先级更高，
+         * 即如果同时设置了TCP_CORK和TCP_NODELAY, 依然是TCP_CORK策略
+         * 所以TCP_CORK | TCP_NODELAY配置可理解为：user想自己限制小包的发送，内核你别管
+         *
+         * 但TCP_CORK | TCP_NODELAY的配置与单纯的TCP_COKR配置也还是有区别的：
+         *
+         * 为什么有了开关Nagle算法的TCP_NODELAY，还要给user再提供一个机制呢？
+         * 主要是因为Nagle算法是否限制小包发送有一个重要的前提：
+         *      网络中至少有一个未被确认的数据包
+         *      那么如果ACK回复的很快，那么即使在使用Nagle算法时还是会产生很多小包
+         * 而user指定了TCP_CORK就不一样了，反正这种限制发送小包的选择是你应用程序做出来的，
+         * 那么内核就不需要再去管"网络中是否有至少一个未被确认的数据包"了。
+         *      
+         * 总的来讲TCP_CORK是交由user application控制是否限制发送小包；
+         * 而Nagle是内核控制是否发送小包的机制
+         *      -- 当然是应用程序强制要求它负责控制是否发送小包的优先级更高了
+         *
+         * */
 		if (val) {
 			tp->nonagle |= TCP_NAGLE_CORK;
 		} else {
