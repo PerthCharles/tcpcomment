@@ -133,14 +133,23 @@ enum {
 #define TCPI_OPT_SYN_DATA	32 /* SYN-ACK acked data in SYN sent or rcvd */
 
 enum tcp_ca_state {
+    /* Open状态就是表示一切都正常的状态: 比如，ACK都是顺序收到的，TCP flag也符合预期 */
 	TCP_CA_Open = 0,
 #define TCPF_CA_Open	(1<<TCP_CA_Open)
+    /* 当数据发送方收到dupack，或者sack信息时，进入disorder状态。
+     * 在此状态下不调整cwnd，但没收到一个dupack, 触发发送一个新数据包，以保障pipe中数据包数量不变 */
 	TCP_CA_Disorder = 1,
 #define TCPF_CA_Disorder (1<<TCP_CA_Disorder)
+    /* 当收到显示的拥塞通知(ECN)后，发送方进入CWR阶段 -- 每收两个ACK，cwnd减1.
+     * 注意此时并未感知到丢包，也没有重传任何数据包
+     * 只有Open和Disorder状态才能进入CWR状态 */
 	TCP_CA_CWR = 2,
 #define TCPF_CA_CWR	(1<<TCP_CA_CWR)
+    /* 当收到足够的dupack，或者fack机制(highest_sack_seq - snd_una) > 3mss, 则进入recovery状态
+     * 一般的流程就是先从Open进入Disorder状态，然后再进入Recovery阶段 */
 	TCP_CA_Recovery = 3,
 #define TCPF_CA_Recovery (1<<TCP_CA_Recovery)
+    /* 当发生RTO超时后，进入Loss状态，cwnd会被设置为1，然后使用慢启动机制增长 */
 	TCP_CA_Loss = 4
 #define TCPF_CA_Loss	(1<<TCP_CA_Loss)
 };

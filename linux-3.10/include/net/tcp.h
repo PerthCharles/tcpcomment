@@ -829,10 +829,13 @@ extern void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 in_flight);
 extern u32 tcp_reno_min_cwnd(const struct sock *sk);
 extern struct tcp_congestion_ops tcp_reno;
 
+/* 设置sock的拥塞状态 */
 static inline void tcp_set_ca_state(struct sock *sk, const u8 ca_state)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
 
+    /* 如果拥塞控制算法有相应的处理函数，则调用
+     * 比如cubic算法会关心loss状态 */
 	if (icsk->icsk_ca_ops->set_state)
 		icsk->icsk_ca_ops->set_state(sk, ca_state);
 	icsk->icsk_ca_state = ca_state;
@@ -936,7 +939,10 @@ static inline bool tcp_in_cwnd_reduction(const struct sock *sk)
  * The exception is cwnd reduction phase, when cwnd is decreasing towards
  * ssthresh.
  */
-/* 如果不在cwnd reduction阶段，则返回当前cwnd的0.75倍 */
+/* 如果不在cwnd reduction阶段，则返回当前cwnd的0.75倍
+ * 因为在cwnd reduction阶段的话，说明慢启动阈值已经设置过了，只要直接返回就好；
+ * 如果没设置过，cwnd和ssthresh之间的差距可能较大，没必要在用老的ssthrehs了，
+ * 因此选择返回当前cwnd的0.75 */
 static inline __u32 tcp_current_ssthresh(const struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);

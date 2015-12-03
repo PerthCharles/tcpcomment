@@ -1901,10 +1901,15 @@ void tcp_enter_loss(struct sock *sk, int how)
 	bool new_recovery = false;
 
 	/* Reduce ssthresh if it has not yet been made inside this window. */
-	if (icsk->icsk_ca_state <= TCP_CA_Disorder ||   /* <= disorder状态，起始就是open或disorder状态的意思 */
-	    !after(tp->high_seq, tp->snd_una) ||        /* TODO： high_seq是干嘛的 ? */
-	    (icsk->icsk_ca_state == TCP_CA_Loss && !icsk->icsk_retransmits)) {  /* 虽然已经设置了Loss状态，但还没有正式的重传 */
+    /* 1. 如果是open或disorder状态，那么ssthresh还没有被设置过
+     * 2. 如果high_seq不比snd_una大，那么说明也没有被设置好，  -- high_seq是开始拥塞时记录的snd_nxt值
+     * 3. 虽然已经设置了Loss状态，但还有正式开始重传 */
+	if (icsk->icsk_ca_state <= TCP_CA_Disorder ||
+	    !after(tp->high_seq, tp->snd_una) ||
+	    (icsk->icsk_ca_state == TCP_CA_Loss && !icsk->icsk_retransmits)) {
+
 		new_recovery = true;    /* 开始一段新的RTO重传之旅 */
+
         /* 注意：prior_ssthrehs可能获取的是当前cwnd的0.75倍，而不是真实的prior_ssthrehs值 */
 		tp->prior_ssthresh = tcp_current_ssthresh(sk);
         /* 按照拥塞控制算法，重设ssthresh */
@@ -1925,8 +1930,11 @@ void tcp_enter_loss(struct sock *sk, int how)
 	if (tcp_is_reno(tp))
 		tcp_reset_reno_sack(tp);
 
-	tp->undo_marker = tp->snd_una;  /* TODO: undo_marker是个什么鬼? */
-    /* 如果选择将SACK信息都忽视掉，则还要清楚sack相关计数器 */
+    /* TODO: undo_marker是个什么鬼?
+     * 记录重传开始的地方 */
+	tp->undo_marker = tp->snd_una;
+
+    /* 如果选择将SACK信息都忽视掉，则还要清除sack相关计数器 */
 	if (how) {
 		tp->sacked_out = 0;
 		tp->fackets_out = 0;
@@ -1939,13 +1947,17 @@ void tcp_enter_loss(struct sock *sk, int how)
 		if (skb == tcp_send_head(sk))
 			break;
 
+        /* 如果重传队列里面已经有一个数据包重传过，但还是进入了Loss状态，
+         * 说明这次进入Loss可能是先进入了Recovery阶段在进入的了， 
+         * 实现者认为这种由Open -> Recovery -> Loss的流程非常严重，不应该undo了，故选择将undo_marker清除 */
 		if (TCP_SKB_CB(skb)->sacked & TCPCB_RETRANS)
 			tp->undo_marker = 0;
 
         /* 在这三个标记中(TCPCB_SACKED_ACKED、TCPCB_SACKED_RETRANS、TCPCB_LOST)
          * 仅保留TCPCB_SACKED_ACKED标记。
-         * 意思就是：保留SACK信息，清除retrans、loss标记 */
-        /* TODO： 为什么要清除retrans和loss标记 */
+         * 意思就是：保留SACK信息，清除retrans、lost标记 */
+        /* TODO： 为什么要清除retrans和lost标记
+         * 1. 清除retrans是因为尽管这个包重传过，但还是进入了loss状态，所以自然假设这个重传包也被丢弃了，保留retrans标记已经没有意义了 */
 		TCP_SKB_CB(skb)->sacked &= (~TCPCB_TAGBITS)|TCPCB_SACKED_ACKED;
 
 		if (!(TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_ACKED)     /* 该SKB没有SACK信息 */
@@ -1953,17 +1965,21 @@ void tcp_enter_loss(struct sock *sk, int how)
 			TCP_SKB_CB(skb)->sacked &= ~TCPCB_SACKED_ACKED;     /* 清除ACK标记 */
 			TCP_SKB_CB(skb)->sacked |= TCPCB_LOST;              /* 标记loss标记 */
 			tp->lost_out += tcp_skb_pcount(skb);                /* 既然把之前被SACK的包认为也丢弃了，则更新计数器 */
-			tp->retransmit_high = TCP_SKB_CB(skb)->end_seq;     /* TODO： retransmit_high的内在含义是？ */
+            /* TODO-DONE： retransmit_high的内在含义是？
+             * 记录被标记为TCPCV_LOST标记的最大的序号 */
+			tp->retransmit_high = TCP_SKB_CB(skb)->end_seq;
 		}
 	}
     /* 验证left_out (= sacked_out + lost_out) 不超过packets_out (= snd_nxt - snd_una) */
 	tcp_verify_left_out(tp);
 
-    /* 更新reordering值, TODO： 目前认为这属于防止reordering被sysctl方式改小? */
+    /* 更新reordering值, TODO： 目前认为这属于防止reordering被sysctl方式改小?
+     * reordering值在非loss阶段，可能被调大(比如通过DSACK信息), 
+     * 但一旦进入Loss状态，则不相信之前的信息了，重新设置回系统默认值 */
 	tp->reordering = min_t(unsigned int, tp->reordering,
 			       sysctl_tcp_reordering);
 	tcp_set_ca_state(sk, TCP_CA_Loss);
-	tp->high_seq = tp->snd_nxt;
+	tp->high_seq = tp->snd_nxt;     /* 设置进入Loss阶段的snd_nxt值 */
 	TCP_ECN_queue_cwr(tp);
 
 	/* F-RTO RFC5682 sec 3.1 step 1: retransmit SND.UNA if no previous
@@ -1971,7 +1987,7 @@ void tcp_enter_loss(struct sock *sk, int how)
 	 * the same SND.UNA (sec 3.2). Disable F-RTO on path MTU probing
 	 */
     /* frto机制，逻辑看上面注释即可。
-     * TODO： 但为什么在已经不是第一次RTO的时候，依然进行FRTO？ */
+     * TODO： 但为什么在已经不是第一次RTO的时候，依然进行FRTO？目前认为它有问题 */
 	tp->frto = sysctl_tcp_frto &&
 		   (new_recovery || icsk->icsk_retransmits) &&
 		   !inet_csk(sk)->icsk_mtup.probe_size;
@@ -2614,7 +2630,10 @@ static void tcp_init_cwnd_reduction(struct sock *sk, const bool set_ssthresh)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	tp->high_seq = tp->snd_nxt;
+    /* 发现拥塞了，high_seq记录此时的snd_nxt
+     * 只有后续snd_una超过这个值才会退出cwnd reduction */
+	tp->high_seq = tp->snd_nxt;     
+
 	tp->tlp_high_seq = 0;
 	tp->snd_cwnd_cnt = 0;
 	tp->prior_cwnd = tp->snd_cwnd;
@@ -2661,13 +2680,17 @@ static inline void tcp_end_cwnd_reduction(struct sock *sk)
 }
 
 /* Enter CWR state. Disable cwnd undo since congestion is proven with ECN */
+/* 进入CWR状态 */
 void tcp_enter_cwr(struct sock *sk, const int set_ssthresh)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	tp->prior_ssthresh = 0;
+    /* 只有Open和Disorder状态才能进入 */
 	if (inet_csk(sk)->icsk_ca_state < TCP_CA_CWR) {
-		tp->undo_marker = 0;
+		tp->undo_marker = 0;    /* 清除重传开始的位置记录 */
+        /* 要开始降低cwnd了，初始化一些相关参数
+         * 从目前的实现来看，进入CWR状态的set_ssthresh恒为1，即要重设慢启动阈值 */
 		tcp_init_cwnd_reduction(sk, set_ssthresh);
 		tcp_set_ca_state(sk, TCP_CA_CWR);
 	}
