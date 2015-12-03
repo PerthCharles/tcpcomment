@@ -815,6 +815,7 @@ static void tcp_update_reordering(struct sock *sk, const int metric,
 		tcp_disable_fack(tp);
 	}
 
+    /* 如果发现了更严重的reorder，就要选择关闭ER功能 */
 	if (metric > 0)
 		tcp_disable_early_retrans(tp);
 }
@@ -2462,11 +2463,15 @@ static void tcp_undo_cwr(struct sock *sk, const bool undo_ssthresh)
  * 1. undo_retrans等于0
  *      最近一次恢复期间重传的数据包个数为undo_retrans
  *      如果收到了足够的D-SACK信息，将undo_retrans减到0了，则说明重传是没有必要的，进而可以undo
- * 2. 如果之前未发送过重传数据包，则可以undo
+ * 2. 如果之前未发送过重传数据包，则可以undo    
  * 3. 如果支持timestamp，并且也收到了tsecr，并且收到的这个数据包的timestamp
- *    比这次重传开始时间还早，那么也能证明重传是多余的，可以undo */
+ *    比这次重传开始时间还早，那么也能证明重传是多余的，可以undo
+ * tcp_packet_delayed(tp)判断条件2和3. */
 static inline bool tcp_may_undo(const struct tcp_sock *tp)
 {
+    /* 首先必须设置了undo_marker才能undo, undo_marker表示重传开始的位置, 如果没有被设置，想undo也不知道往哪undo
+     *      -- 注意在tcp_enter_loss时，如果发现有数据包已经重传过，但还是进入了loss，则会强制清零undo_marker，表示这种情况下不给undo的机会 
+     */
 	return tp->undo_marker && (!tp->undo_retrans || tcp_packet_delayed(tp));
 }
 
@@ -2492,6 +2497,8 @@ static bool tcp_try_undo_recovery(struct sock *sk)
 		NET_INC_STATS_BH(sock_net(sk), mib_idx);
 		tp->undo_marker = 0;
 	}
+    /* 如果不支持SACK，并且high_seq(在开始准备降低cwnd时记录的snd_nxt)已经被按序确认了，
+     * 那么有可能这个ack确认了大量的数据，要防止burst */
 	if (tp->snd_una == tp->high_seq && tcp_is_reno(tp)) {
 		/* Hold old state until something *above* high_seq
 		 * is ACKed. For Reno it is MUST to prevent false
@@ -2508,13 +2515,13 @@ static void tcp_try_undo_dsack(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-    /* D-SACK可以通知发送方，新到的段是已经接收过的。
+    /* D-SACK可以通知发送方，新到的段已经接收过的。
      * 如果所有在最近一次恢复期间重传的数据段都被D-SACK确认了，则发送方知道这此重传是不必要触发的 */
 	if (tp->undo_marker && !tp->undo_retrans) {
 		DBGUNDO(sk, "D-SACK");
 		tcp_undo_cwr(sk, true); /* 恢复cwnd，并且也恢复ssthresh */
-		tp->undo_marker = 0;    /* TODO: undo_marker标记的是重传开始的位置，undo一次后自然要归零 */
-		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPDSACKUNDO);
+		tp->undo_marker = 0;    /* undo_marker标记的是重传开始的位置，undo一次后自然要归零 */
+		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPDSACKUNDO); /* 记录通过DSACK信息undocwnd reduction的次数 */
 	}
 }
 
@@ -2532,6 +2539,7 @@ static void tcp_try_undo_dsack(struct sock *sk)
  * that successive retransmissions of a segment must not advance
  * retrans_stamp under any conditions.
  */
+/* 严谨的判断是否有数据重传过, 如果有则返回true, 否则返回false */
 static bool tcp_any_retrans_done(const struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
@@ -2563,6 +2571,7 @@ static int tcp_try_undo_partial(struct sock *sk, int acked)
 		/* Plain luck! Hole if filled with delayed
 		 * packet, rather than with a retransmit.
 		 */
+        /* 如果没有数据重传过，则将retrans_stamp清零 */
 		if (!tcp_any_retrans_done(sk))
 			tp->retrans_stamp = 0;
 
