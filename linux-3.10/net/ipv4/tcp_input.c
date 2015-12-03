@@ -757,10 +757,13 @@ void tcp_set_rto(struct sock *sk)
 	tcp_bound_rto(sk);
 }
 
+/* 返回初始拥塞窗口 */
 __u32 tcp_init_cwnd(const struct tcp_sock *tp, const struct dst_entry *dst)
 {
+    /* 如果通过ip设置了某个固定route的初始拥塞窗口，那么使用这个值 */
 	__u32 cwnd = (dst ? dst_metric(dst, RTAX_INITCWND) : 0);
 
+    /* 否则使用默认的TCP_INIT_CWND值, 默认为10 */
 	if (!cwnd)
 		cwnd = TCP_INIT_CWND;
 	return min_t(__u32, cwnd, tp->snd_cwnd_clamp);

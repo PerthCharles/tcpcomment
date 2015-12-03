@@ -920,8 +920,10 @@ static inline unsigned int tcp_packets_in_flight(const struct tcp_sock *tp)
 	return tp->packets_out - tcp_left_out(tp) + tp->retrans_out;
 }
 
+/* 初始慢启动阈值为无穷大 */
 #define TCP_INFINITE_SSTHRESH	0x7fffffff
 
+/* 根据慢启动阈值来判断是否处于初始的慢启动阶段 */
 static inline bool tcp_in_initial_slowstart(const struct tcp_sock *tp)
 {
 	return tp->snd_ssthresh >= TCP_INFINITE_SSTHRESH;
