@@ -216,7 +216,7 @@ struct tcp_sock {
 	u32	retrans_out;	/* Retransmitted packets out		*/
 
 	u16	urg_data;	/* Saved octet of OOB data and control flags */
-	u8	ecn_flags;	/* ECN status bits.			*/
+	u8	ecn_flags;	/* ECN status bits.			*/  /* ECN标记 */
 	u8	reordering;	/* Packet reordering metric.		*/
 	u32	snd_up;		/* Urgent pointer		*/
 

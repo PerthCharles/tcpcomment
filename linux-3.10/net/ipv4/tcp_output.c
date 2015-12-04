@@ -312,11 +312,15 @@ static inline void TCP_ECN_send_synack(const struct tcp_sock *tp, struct sk_buff
 }
 
 /* Packet ECN state for a SYN.  */
+/* 在syn包的TCP头部，设置ECN、CWR标记，表示支持ECN
+ * 默认不开启 */
 static inline void TCP_ECN_send_syn(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	tp->ecn_flags = 0;
+    /* 需要选项被开启
+     * 默认值为2， 表示仅对于被动建联的请求开启ECN标记，主动建联时不设置ECN标记 */
 	if (sock_net(sk)->ipv4.sysctl_tcp_ecn == 1) {
 		TCP_SKB_CB(skb)->tcp_flags |= TCPHDR_ECE | TCPHDR_CWR;
 		tp->ecn_flags = TCP_ECN_OK;
@@ -333,25 +337,30 @@ TCP_ECN_make_synack(const struct request_sock *req, struct tcphdr *th)
 /* Set up ECN state for a packet on a ESTABLISHED socket that is about to
  * be sent.
  */
+/* 对一个普通的数据包设置ECN标记 */
 static inline void TCP_ECN_send(struct sock *sk, struct sk_buff *skb,
 				int tcp_header_len)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
+    /* 必须本地支持ECN才会设置 */
 	if (tp->ecn_flags & TCP_ECN_OK) {
 		/* Not-retransmitted data segment: set ECT and inject CWR. */
-		if (skb->len != tcp_header_len &&
+		if (skb->len != tcp_header_len &&   /* skb有数据，且不是重传包 */
 		    !before(TCP_SKB_CB(skb)->seq, tp->snd_nxt)) {
-			INET_ECN_xmit(sk);
+
+			INET_ECN_xmit(sk);  /* 设置tos的ecn域，表示支持 */
+            /* 发送端已经收到拥塞信号 */
 			if (tp->ecn_flags & TCP_ECN_QUEUE_CWR) {
 				tp->ecn_flags &= ~TCP_ECN_QUEUE_CWR;
-				tcp_hdr(skb)->cwr = 1;
-				skb_shinfo(skb)->gso_type |= SKB_GSO_TCP_ECN;
+				tcp_hdr(skb)->cwr = 1;  /* 设置包头的CWR域，通知对端已经收到了ECN拥塞信号 */
+				skb_shinfo(skb)->gso_type |= SKB_GSO_TCP_ECN;   /* 标记skb，设置了CWR域 */
 			}
 		} else {
 			/* ACK or retransmitted segment: clear ECT|CE */
 			INET_ECN_dontxmit(sk);
 		}
+        /* 作为接收端，要通知发送端, ece表示 ecn echo */
 		if (tp->ecn_flags & TCP_ECN_DEMAND_CWR)
 			tcp_hdr(skb)->ece = 1;
 	}
@@ -934,6 +943,7 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	}
 
 	tcp_options_write((__be32 *)(th + 1), tp, &opts);
+    /* 不带SYN标记，是一个普通的数据包, 根据情况设置ECN标记 */
 	if (likely((tcb->tcp_flags & TCPHDR_SYN) == 0))
 		TCP_ECN_send(sk, skb, tcp_header_size);
 

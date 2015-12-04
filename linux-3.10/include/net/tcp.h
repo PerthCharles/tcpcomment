@@ -403,10 +403,10 @@ static inline void tcp_dec_quickack_mode(struct sock *sk,
 	}
 }
 
-#define	TCP_ECN_OK		1
-#define	TCP_ECN_QUEUE_CWR	2
-#define	TCP_ECN_DEMAND_CWR	4
-#define	TCP_ECN_SEEN		8
+#define	TCP_ECN_OK		1           /* 本端支持ECN */
+#define	TCP_ECN_QUEUE_CWR	2       /* 本端被通知了拥塞，此时作为发送方，会执行cwnd reduction */
+#define	TCP_ECN_DEMAND_CWR	4       /* 通知对端发生了拥塞，此时作为接收方 */
+#define	TCP_ECN_SEEN		8       
 
 enum tcp_tw_status {
 	TCP_TW_SUCCESS = 0,

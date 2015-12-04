@@ -196,6 +196,7 @@ tcp_early_retrans - INTEGER
 		4 enables TLP only.
 	Default: 3
 
+/* 默认情况下，仅对于被动建联的请求开启ECN标记，主动建联时不设置ECN标记 */
 tcp_ecn - INTEGER
 	Control use of Explicit Congestion Notification (ECN) by TCP.
 	ECN is used only when both ends of the TCP connection indicate

@@ -8,20 +8,22 @@
 #include <net/dsfield.h>
 
 enum {
-	INET_ECN_NOT_ECT = 0,
-	INET_ECN_ECT_1 = 1,
-	INET_ECN_ECT_0 = 2,
-	INET_ECN_CE = 3,
-	INET_ECN_MASK = 3,
+	INET_ECN_NOT_ECT = 0,   /* TOS后两位为：00，表示不支持ECN */
+	INET_ECN_ECT_1 = 1,     /* 表示支持ECN */
+	INET_ECN_ECT_0 = 2,     /* 同样表示支持ECN */
+	INET_ECN_CE = 3,        /* TOS后两位为：11，表示路由器发生了拥塞 */
+	INET_ECN_MASK = 3,      /* ECN域的掩码 */
 };
 
 extern int sysctl_tunnel_ecn_log;
 
+/* 检测ECN域，判断是否标记了拥塞 */
 static inline int INET_ECN_is_ce(__u8 dsfield)
 {
 	return (dsfield & INET_ECN_MASK) == INET_ECN_CE;
 }
 
+/* 判断是否支持ECN */
 static inline int INET_ECN_is_not_ect(__u8 dsfield)
 {
 	return (dsfield & INET_ECN_MASK) == INET_ECN_NOT_ECT;
@@ -48,6 +50,7 @@ static inline __u8 INET_ECN_encapsulate(__u8 outer, __u8 inner)
 	return outer;
 }
 
+/* 设置TOS的ecn域，表示支持 ecn */
 static inline void INET_ECN_xmit(struct sock *sk)
 {
 	inet_sk(sk)->tos |= INET_ECN_ECT_0;
@@ -55,6 +58,7 @@ static inline void INET_ECN_xmit(struct sock *sk)
 		inet6_sk(sk)->tclass |= INET_ECN_ECT_0;
 }
 
+/* 清除ECN标记，对于重传包或ACK包不发送 */
 static inline void INET_ECN_dontxmit(struct sock *sk)
 {
 	inet_sk(sk)->tos &= ~INET_ECN_MASK;
@@ -71,9 +75,12 @@ static inline void INET_ECN_dontxmit(struct sock *sk)
 		(label) |= htonl(INET_ECN_ECT_0 << 20);			\
     } while (0)
 
+/* 设置IP的ECN域 */
 static inline int IP_ECN_set_ce(struct iphdr *iph)
 {
+    /* 取checksum */
 	u32 check = (__force u32)iph->check;
+    /* 取ip头的ECN值 */
 	u32 ecn = (iph->tos + 1) & INET_ECN_MASK;
 
 	/*
@@ -83,6 +90,7 @@ static inline int IP_ECN_set_ce(struct iphdr *iph)
 	 * INET_ECN_ECT_0   => 11
 	 * INET_ECN_CE      => 00
 	 */
+    /* 不支持ECN，则直接返回 */
 	if (!(ecn & 2))
 		return !ecn;
 
@@ -93,11 +101,13 @@ static inline int IP_ECN_set_ce(struct iphdr *iph)
 	 */
 	check += (__force u16)htons(0xFFFB) + (__force u16)htons(ecn);
 
+    /* 更新checksum, ECN标记 */
 	iph->check = (__force __sum16)(check + (check>=0xFFFF));
 	iph->tos |= INET_ECN_CE;
 	return 1;
 }
 
+/* 清除ECN标记 */
 static inline void IP_ECN_clear(struct iphdr *iph)
 {
 	iph->tos &= ~INET_ECN_MASK;
