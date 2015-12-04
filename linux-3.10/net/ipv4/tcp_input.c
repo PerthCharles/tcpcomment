@@ -92,6 +92,8 @@ int sysctl_tcp_challenge_ack_limit = 100;
 int sysctl_tcp_stdurg __read_mostly;
 int sysctl_tcp_rfc1337 __read_mostly;
 int sysctl_tcp_max_orphans __read_mostly = NR_FILE;
+/* frto的出发点：更快的从spurious rto中恢复出来
+ * TODO: frto机制已经跟undo机制混在一起了，需要抽空结合RFC仔细的理一下 */
 int sysctl_tcp_frto __read_mostly = 2;
 
 int sysctl_tcp_thin_dupack __read_mostly;
@@ -1832,6 +1834,7 @@ static bool tcp_limit_reno_sacked(struct tcp_sock *tp)
  * in assumption of absent reordering, interpret this as reordering.
  * The only another reason could be bug in receiver TCP.
  */
+/* 如果收到的dupack个数超过了理论的预期值，说明可能还存在reorder，故选择更新reorder值 */
 static void tcp_check_reno_reordering(struct sock *sk, const int addend)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -1840,7 +1843,6 @@ static void tcp_check_reno_reordering(struct sock *sk, const int addend)
 }
 
 /* Emulate SACKs for SACKless connection: account for a new dupack. */
-
 static void tcp_add_reno_sack(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -1990,7 +1992,7 @@ void tcp_enter_loss(struct sock *sk, int how)
 	 * loss recovery is underway except recurring timeout(s) on
 	 * the same SND.UNA (sec 3.2). Disable F-RTO on path MTU probing
 	 */
-    /* frto机制，逻辑看上面注释即可。
+    /* 标记启用frto机制，逻辑看上面注释即可。
      * TODO： 但为什么在已经不是第一次RTO的时候，依然进行FRTO？目前认为它有问题 */
 	tp->frto = sysctl_tcp_frto &&
 		   (new_recovery || icsk->icsk_retransmits) &&
@@ -2857,9 +2859,11 @@ static void tcp_process_loss(struct sock *sk, int flag, bool is_dupack)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
+    /* 判断loss是否被完全恢复了 */
 	bool recovered = !before(tp->snd_una, tp->high_seq);
 
 	if (tp->frto) { /* F-RTO RFC5682 sec 3.1 (sack enhanced version). */
+        /* 如果收到的第一个ACK包，确认了未重传过的数据，则判定为spurious rto */
 		if (flag & FLAG_ORIG_SACK_ACKED) {
 			/* Step 3.b. A timeout is spurious if not all data are
 			 * lost, i.e., never-retransmitted data are (s)acked.
@@ -2867,19 +2871,25 @@ static void tcp_process_loss(struct sock *sk, int flag, bool is_dupack)
 			tcp_try_undo_loss(sk, true);
 			return;
 		}
+        /* 如果没有发送新数据，说明这还是FRTO机制收到的第一个ACK包，
+         * 如果这个包是一个dupack，则判定为真实的rto */
 		if (after(tp->snd_nxt, tp->high_seq) &&
 		    (flag & FLAG_DATA_SACKED || is_dupack)) {
 			tp->frto = 0; /* Loss was real: 2nd part of step 3.a */
+        /* 如果snd_una前移了，但是并没有完全恢复，在FRTO机制中，会选择发送新的数据包 */
 		} else if (flag & FLAG_SND_UNA_ADVANCED && !recovered) {
 			tp->high_seq = tp->snd_nxt;
 			__tcp_push_pending_frames(sk, tcp_current_mss(sk),
 						  TCP_NAGLE_OFF);
+            /* 只有成功的发送了新的数据包才会进入FRTO的后续判断 */
 			if (after(tp->snd_nxt, tp->high_seq))
 				return; /* Step 2.b */
+            /* 没发送成功数据，只好真实的进入RTO流程，放弃FRTO机制 */
 			tp->frto = 0;
 		}
 	}
 
+    /* 如果loss已经被完全恢复了，则undo recovery */
 	if (recovered) {
 		/* F-RTO RFC5682 sec 3.1 step 2.a and 1st part of step 3.a */
 		icsk->icsk_retransmits = 0;
@@ -2893,12 +2903,14 @@ static void tcp_process_loss(struct sock *sk, int flag, bool is_dupack)
 		 * delivered. Lower inflight to clock out (re)tranmissions.
 		 */
 		if (after(tp->snd_nxt, tp->high_seq) && is_dupack)
-			tcp_add_reno_sack(sk);
+			tcp_add_reno_sack(sk);  /* 增加dupack计数器 */
 		else if (flag & FLAG_SND_UNA_ADVANCED)
-			tcp_reset_reno_sack(tp);
+			tcp_reset_reno_sack(tp);    /* 重置dupack计数器 */
 	}
 	if (tcp_try_undo_loss(sk, false))
 		return;
+
+    /* 如果没能通过FRTO机制判断出spurious，则正常的RTO重传数据 */
 	tcp_xmit_retransmit_queue(sk);
 }
 
