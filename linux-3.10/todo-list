@@ -8,4 +8,5 @@
 [ ] 弄清tcp_retransmit_skb()时，forward retrans的内在含义
 [ ] 弄清新内核中new_vegas算法的实现
 [ ] 弄清新内核中pacing的实现: 相关patch详见 patches/pacing-patch
-[ ] 理解TSO相关实现
+[X] 理解TSO相关实现
+[ ] 读/proc/net/dev接口的实现
