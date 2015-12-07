@@ -478,6 +478,7 @@ min_links
 	aggregator cannot be active without at least one available link,
 	setting this option to 0 or to 1 has the exact same effect.
 
+/* bonding的各种mode的官方解释 */
 mode
 
 	Specifies one of the bonding policies. The default is
@@ -485,6 +486,7 @@ mode
 
 	balance-rr or 0
 
+        /* 简单的轮训策略，可能导致微秒级的乱序 */
 		Round-robin policy: Transmit packets in sequential
 		order from the first available slave through the
 		last.  This mode provides load balancing and fault
@@ -492,6 +494,7 @@ mode
 
 	active-backup or 1
 
+        /* 主备模式，网卡利用率不高 */
 		Active-backup policy: Only one slave in the bond is
 		active.  A different slave becomes active if, and only
 		if, the active slave fails.  The bond's MAC address is
@@ -513,6 +516,7 @@ mode
 
 	balance-xor or 2
 
+        /* 基于hash的负载均衡，可能出现某网卡过载的情况 */
 		XOR policy: Transmit based on the selected transmit
 		hash policy.  The default policy is a simple [(source
 		MAC address XOR'd with destination MAC address) modulo
@@ -524,6 +528,7 @@ mode
 
 	broadcast or 3
 
+        /* 暴力的广播策略，绝对的高可用，也绝对的浪费资源 */
 		Broadcast policy: transmits everything on all slave
 		interfaces.  This mode provides fault tolerance.
 
@@ -557,6 +562,7 @@ mode
 
 	balance-tlb or 5
 
+        /* 数据的传输根据网卡的负载来选择，但接收数据包由指定slave负责 */
 		Adaptive transmit load balancing: channel bonding that
 		does not require any special switch support.  The
 		outgoing traffic is distributed according to the
@@ -568,11 +574,13 @@ mode
 
 		Prerequisite:
 
+        /* 需要能够检测到各个slave的速率才能做这种load balancing */
 		Ethtool support in the base drivers for retrieving the
 		speed of each slave.
 
 	balance-alb or 6
 
+        /* 模式5的加强版，能做到rlb */
 		Adaptive load balancing: includes balance-tlb plus
 		receive load balancing (rlb) for IPV4 traffic, and
 		does not require any special switch support.  The
@@ -731,6 +739,7 @@ use_carrier
 
 xmit_hash_policy
 
+    /* 基于hash进行负载均衡，需要用到hash。该选项指定具体的hash方法 */
 	Selects the transmit hash policy to use for slave selection in
 	balance-xor and 802.3ad modes.  Possible values are:
 
@@ -847,6 +856,7 @@ resend_igmp
 
 	This option was added for bonding version 3.7.0.
 
+/* 多种配置方法，需要结合实际系统版本来得出最佳实践 */
 3. Configuring Bonding Devices
 ==============================
 
@@ -1577,6 +1587,7 @@ command.  Bonding devices will have the MASTER flag set; Bonding slave
 devices will have the SLAVE flag set.  The ifconfig output does not
 contain information on which slaves are associated with which masters.
 
+/* 除了TLP和ALB两种模式，其他模式下slave都有相同的MAC地址 */
 	In the example below, the bond0 interface is the master
 (MASTER) while eth0 and eth1 are slaves (SLAVE). Notice all slaves of
 bond0 have the same MAC address (HWaddr) as bond0 for all modes except
@@ -1604,6 +1615,8 @@ eth1      Link encap:Ethernet  HWaddr 00:C0:F0:1F:37:B4
           collisions:0 txqueuelen:100
           Interrupt:9 Base address:0x1400
 
+/* 有些模式由于slave使用了相同的MAC地址，并且同时在工作，
+ * 因此需要switch有一些格外的配置 */
 5. Switch Configuration
 =======================
 
@@ -1624,6 +1637,7 @@ grouped together in a single etherchannel instance, then that
 etherchannel is set to mode "lacp" to enable 802.3ad (instead of
 standard EtherChannel).
 
+    /* 默认的balance-rr模式，需要switch支持grouped ports */
 	The balance-rr, balance-xor and broadcast modes generally
 require that the switch have the appropriate ports grouped together.
 The nomenclature for such a group differs between switches, it may be
@@ -2133,6 +2147,7 @@ mode is described below.
 although you will have to decide which bonding mode best suits your
 needs.  The trade offs for each mode are detailed below:
 
+/* mode=0 的缺点： out of order */
 balance-rr: This mode is the only mode that will permit a single
 	TCP/IP connection to stripe traffic across multiple
 	interfaces. It is therefore the only mode that will allow a
@@ -2150,6 +2165,7 @@ balance-rr: This mode is the only mode that will permit a single
 	interface's worth of throughput, even after adjusting
 	tcp_reordering.
 
+    /* reorder更具体的网络配置环境有关，也跟coalescing有关 */
 	Note that the fraction of packets that will be delivered out of
 	order is highly variable, and is unlikely to be zero.  The level
 	of reordering depends upon a variety of factors, including the
@@ -2302,6 +2318,9 @@ external network; this host then additionally acts as a gateway.
 12.2.1 MT Bonding Mode Selection for Multiple Switch Topology
 -------------------------------------------------------------
 
+    /* 如果使用多switch配置，那么如果能缓解好out of
+     * order问题，那么balance-rr还是很有用的
+     */
 	In actual practice, the bonding mode typically employed in
 configurations of this type is balance-rr.  Historically, in this
 network configuration, the usual caveats about out of order packet
@@ -2513,6 +2532,7 @@ bonding driver.
 avoid fail-over delay issues when using bonding.
 
 	
+/* 这部分应该仔细读一读 */
 15. Frequently Asked Questions
 ==============================
 
