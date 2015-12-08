@@ -5576,6 +5576,7 @@ struct rtnl_link_stats64 *dev_get_stats(struct net_device *dev,
 {
 	const struct net_device_ops *ops = dev->netdev_ops;
 
+    /* net_device 的计数器基本都是由硬件提供寄存器，然后watchdog程序更新就可以了 */
 	if (ops->ndo_get_stats64) {
 		memset(storage, 0, sizeof(*storage));
 		ops->ndo_get_stats64(dev, storage);
