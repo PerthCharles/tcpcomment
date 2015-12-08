@@ -74,9 +74,11 @@ static void dev_seq_stop(struct seq_file *seq, void *v)
 	rcu_read_unlock();
 }
 
+/* 负责打印具体的 /porc/net/dev 信息 */
 static void dev_seq_printf_stats(struct seq_file *seq, struct net_device *dev)
 {
 	struct rtnl_link_stats64 temp;
+    /* 获取dev 的统计信息 */
 	const struct rtnl_link_stats64 *stats = dev_get_stats(dev, &temp);
 
 	seq_printf(seq, "%6s: %7llu %7llu %4llu %4llu %4llu %5llu %10llu %9llu "
@@ -102,6 +104,7 @@ static void dev_seq_printf_stats(struct seq_file *seq, struct net_device *dev)
  *	Called from the PROCfs module. This now uses the new arbitrary sized
  *	/proc/net interface to create /proc/net/dev
  */
+/* 负责打印 /proc/net/dev接口内容 */
 static int dev_seq_show(struct seq_file *seq, void *v)
 {
 	if (v == SEQ_START_TOKEN)
@@ -167,6 +170,7 @@ static int dev_seq_open(struct inode *inode, struct file *file)
 			    sizeof(struct seq_net_private));
 }
 
+/* /proc/net/dev接口对应的文件处理函数 */
 static const struct file_operations dev_seq_fops = {
 	.owner	 = THIS_MODULE,
 	.open    = dev_seq_open,

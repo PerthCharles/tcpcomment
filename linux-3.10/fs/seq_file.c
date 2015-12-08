@@ -218,7 +218,7 @@ ssize_t seq_read(struct file *file, char __user *buf, size_t size, loff_t *ppos)
 		err = PTR_ERR(p);
 		if (!p || IS_ERR(p))
 			break;
-		err = m->op->show(m, p);
+		err = m->op->show(m, p);    /* 调用show函数 */
 		if (err < 0)
 			break;
 		if (unlikely(err))
