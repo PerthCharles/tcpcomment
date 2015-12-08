@@ -433,17 +433,21 @@ static const struct file_operations snmp_seq_fops = {
 /*
  *	Output /proc/net/netstat
  */
+/* 负责netstat接口的数据输出 */
 static int netstat_seq_show(struct seq_file *seq, void *v)
 {
 	int i;
 	struct net *net = seq->private;
 
+    /* 输出snmp4_net_list数组中的item name */
 	seq_puts(seq, "TcpExt:");
 	for (i = 0; snmp4_net_list[i].name != NULL; i++)
 		seq_printf(seq, " %s", snmp4_net_list[i].name);
 
+    /* 输出snmp4_net_list数组中的item value */
 	seq_puts(seq, "\nTcpExt:");
 	for (i = 0; snmp4_net_list[i].name != NULL; i++)
+        /* 看来关键在于net->mib.net_statistics */
 		seq_printf(seq, " %lu",
 			   snmp_fold_field((void __percpu **)net->mib.net_statistics,
 					   snmp4_net_list[i].entry));
@@ -463,11 +467,13 @@ static int netstat_seq_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
+/* 打开/proc/net/netstat 接口的处理函数 */
 static int netstat_seq_open(struct inode *inode, struct file *file)
 {
 	return single_open_net(inode, file, netstat_seq_show);
 }
 
+/* /proc/net/netstat 接口对应的文件操作结构体 */
 static const struct file_operations netstat_seq_fops = {
 	.owner	 = THIS_MODULE,
 	.open	 = netstat_seq_open,

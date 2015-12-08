@@ -37,6 +37,7 @@ struct netns_ipvs;
 #define NETDEV_HASHBITS    8
 #define NETDEV_HASHENTRIES (1 << NETDEV_HASHBITS)
 
+/* network namespaces的关键结构体 */
 struct net {
 	atomic_t		passive;	/* To decided when the network
 						 * namespace should be freed.
@@ -81,7 +82,7 @@ struct net {
 
 	struct net_device       *loopback_dev;          /* The loopback */
 	struct netns_core	core;
-	struct netns_mib	mib;
+	struct netns_mib	mib;        /* /proc/net/netstat、/proc/net/snmp等接口的counter起始都是放到这个地方来处理的 */
 	struct netns_packet	packet;
 	struct netns_unix	unx;
 	struct netns_ipv4	ipv4;
