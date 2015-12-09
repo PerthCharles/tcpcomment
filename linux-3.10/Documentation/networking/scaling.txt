@@ -4,6 +4,7 @@ Scaling in the Linux Networking Stack
 Introduction
 ============
 
+/* 想玩好多核系统的网络性能，这篇文档属于必读材料 */
 This document describes a set of complementary techniques in the Linux
 networking stack to increase parallelism and improve performance for
 multi-processor systems.
@@ -65,6 +66,7 @@ relative weights.
 
 == RSS IRQ Configuration
 
+/* 应该关闭irqbalance服务 */
 Each receive queue has a separate IRQ associated with it. The NIC triggers
 this to notify a CPU when new packets arrive on the given queue. The
 signaling path for PCIe devices uses message signaled interrupts (MSI-X),
@@ -89,6 +91,8 @@ receive queue overflows due to a saturated CPU, because in default
 mode with interrupt coalescing enabled, the aggregate number of
 interrupts (and thus work) grows with each additional queue.
 
+/* 还要注意到HT基本上对multiqueue没什么用，所以要限制queue的数量等于CPU
+ * cores的个数 */
 Per-cpu load can be observed using the mpstat utility, but note that on
 processors with hyperthreading (HT), each hyperthread is represented as
 a separate CPU. For interrupt handling, HT has shown no benefit in
@@ -151,12 +155,16 @@ the bitmap.
 
 == Suggested Configuration
 
+/* RPS对单队列的网卡很有用 */
 For a single queue device, a typical RPS configuration would be to set
 the rps_cpus to the CPUs in the same memory domain of the interrupting
 CPU. If NUMA locality is not an issue, this could also be all CPUs in
 the system. At high interrupt rate, it might be wise to exclude the
 interrupting CPU from the map since that already performs much work.
 
+/* 对于多队列的网卡，如果num_queue == num_cpu，则没有必要开RPS；
+ * 如果num_queue < num_cpu,那么将某队列的rps_cpus设置为与IRQ CPU处于同一个 memory
+ * domain 的CPU可能有好处 */
 For a multi-queue system, if RSS is configured so that a hardware
 receive queue is mapped to each CPU, then RPS is probably redundant
 and unnecessary. If there are fewer hardware queues than CPUs, then
@@ -170,7 +178,7 @@ RFS: Receive Flow Steering
 While RPS steers packets solely based on hash, and thus generally
 provides good load distribution, it does not take into account
 application locality. This is accomplished by Receive Flow Steering
-(RFS). The goal of RFS is to increase datacache hitrate by steering
+(RFS). The goal of RFS is to increase datacache hitrate by steering      // RFS的目标！！！
 kernel processing of packets to the CPU where the application thread
 consuming the packet is running. RFS relies on the same RPS mechanisms
 to enqueue packets onto the backlog of another CPU and to wake up that
@@ -247,6 +255,7 @@ The number of entries in the per-queue flow table are set through:
 
 == Suggested Configuration
 
+/* RFS的配置详解 */
 Both of these need to be set before RFS is enabled for a receive queue.
 Values for both are rounded up to the nearest power of two. The
 suggested flow count depends on the expected number of active connections
@@ -266,6 +275,7 @@ configured as 2048.
 Accelerated RFS
 ===============
 
+/* 第一句话就直击要害！ */
 Accelerated RFS is to RFS what RSS is to RPS: a hardware-accelerated load
 balancing mechanism that uses soft state to steer flows based on where
 the application thread consuming the packets of each flow is running.
@@ -291,6 +301,9 @@ set to be one whose processing CPU is closest in cache locality.
 
 ==== Accelerated RFS Configuration
 
+/* 这个功能应该也尽量用起来啊
+ * TODO： 查资料如何判断NIC和驱动是否支持ACCEL_RFS 
+ * TODO： 如何使用ethtool将ntuple开启？ */
 Accelerated RFS is only available if the kernel is compiled with
 CONFIG_RFS_ACCEL and support is provided by the NIC device and driver.
 It also requires that ntuple filtering is enabled via ethtool. The map
@@ -306,6 +319,7 @@ NIC supports hardware acceleration.
 XPS: Transmit Packet Steering
 =============================
 
+/* 减少多个CPU使用同一个transmmit queue造成contention的技术 */
 Transmit Packet Steering is a mechanism for intelligently selecting
 which transmit queue to use when transmitting a packet on a multi-queue
 device. To accomplish this, a mapping from CPU to hardware queue(s) is
@@ -319,16 +333,22 @@ transmit queue). Secondly, cache miss rate on transmit completion is
 reduced, in particular for data cache lines that hold the sk_buff
 structures.
 
+/* XPS机制的配置策略 */
 XPS is configured per transmit queue by setting a bitmap of CPUs that
-may use that queue to transmit. The reverse mapping, from CPUs to
+may use that queue to transmit.
+The reverse mapping, from CPUs to
 transmit queues, is computed and maintained for each network device.
 When transmitting the first packet in a flow, the function
 get_xps_queue() is called to select a queue. This function uses the ID
-of the running CPU as a key into the CPU-to-queue lookup table. If the
-ID matches a single queue, that is used for transmission. If multiple
+of the running CPU as a key into the CPU-to-queue lookup table.
+/* 如果是one-cpu-one-queue,直接发；如果是one-cpu-multi-queue,则要用hash */
+If the ID matches a single queue, that is used for transmission. If multiple
 queues match, one is selected by using the flow hash to compute an index
 into the set.
 
+/* 后续数据包的发送会使用同一个队列！
+ * TODO-DONE: 但是这是否会与bonding的balance-rr模式冲突呢？
+ * 不会，因为看后面的配置，就知道这个是每一个物理网卡都进行的配置 */
 The queue chosen for transmitting a particular flow is saved in the
 corresponding socket structure for the flow (e.g. a TCP connection).
 This transmit queue is used for subsequent packets sent on the flow to
