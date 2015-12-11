@@ -378,6 +378,7 @@ lookup_protocol:
 
 	inet->inet_id = 0;
 
+    /* 创建sock时，初始化sock结构体 */
 	sock_init_data(sock, sk);
 
 	sk->sk_destruct	   = inet_sock_destruct;

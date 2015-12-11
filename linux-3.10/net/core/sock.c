@@ -2154,6 +2154,10 @@ static void sock_def_error_report(struct sock *sk)
 	rcu_read_unlock();
 }
 
+/* 当被动建联的三次握手完成后，将状态设置为TCP_ESTABLISHED之后，
+ * 会调用sk->sk_data_ready()，其实就是这个函数，
+ * 应该是wakeup等待着的accept函数 
+ * TODO: 详细的理解和分析该函数及相关内容 */
 static void sock_def_readable(struct sock *sk, int len)
 {
 	struct socket_wq *wq;
@@ -2218,6 +2222,8 @@ void sk_stop_timer(struct sock *sk, struct timer_list* timer)
 }
 EXPORT_SYMBOL(sk_stop_timer);
 
+/* 初始化struct sock *sk结构体 */
+/* struct socket *sock是給用户态用的，要注意区分开 */
 void sock_init_data(struct socket *sock, struct sock *sk)
 {
 	skb_queue_head_init(&sk->sk_receive_queue);
@@ -2253,7 +2259,7 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 			af_family_clock_key_strings[sk->sk_family]);
 
 	sk->sk_state_change	=	sock_def_wakeup;
-	sk->sk_data_ready	=	sock_def_readable;
+	sk->sk_data_ready	=	sock_def_readable;      /* 唯一像是初始化sk->sk_data_ready的地方 */
 	sk->sk_write_space	=	sock_def_write_space;
 	sk->sk_error_report	=	sock_def_error_report;
 	sk->sk_destruct		=	sock_def_destruct;

@@ -785,18 +785,26 @@ EXPORT_SYMBOL(tcp_check_req);
  * locked is obtained, other packets cause the same connection to
  * be created.
  */
-
+/* 刚从LISTEN状态下，完成3WHS后的sock称之为child，此时它应该还是TCP_SYN_RECV状态 */
 int tcp_child_process(struct sock *parent, struct sock *child,
 		      struct sk_buff *skb)
 {
 	int ret = 0;
 	int state = child->sk_state;
 
+    /* TODO: 实际网络中观测到大量TCP_SYN_RECV状态的socket，是不是由于这个地方sock_owned_by_user判定为真了？ 
+     * 导致无法进行正常的后续处理？
+     * 当然也可能是parent->sk_data_ready()wakeup花的时间太久了*/
 	if (!sock_owned_by_user(child)) {
 		ret = tcp_rcv_state_process(child, skb, tcp_hdr(skb),
 					    skb->len);
 		/* Wakeup parent, send SIGIO */
+        /* 一般情况下state肯定是TCP_SYN_RECV，而更新后的child->sk_state肯定是TCP_ESTABLISHED */
 		if (state == TCP_SYN_RECV && child->sk_state != state)
+            /* 通知sock 有数据需要处理，TODO-DONE: 具体的处理函数是？ */
+            /* 有资料说这个地方是唤醒icsk_accept_queue上的accept函数，觉得有道理。
+             * 但是还没有自己找到直接的证据 
+             * 已经找到，直接的调用函数是：sock_def_readable()*/
 			parent->sk_data_ready(parent, 0);
 	} else {
 		/* Alas, it is possible again, because we do lookup
