@@ -2116,6 +2116,7 @@ process:
 	if (sk_filter(sk, skb))
 		goto discard_and_relse;
 
+    /* 到这里将收到skb的dev清空，之后就只有skb->iif能找到net device 了 */
 	skb->dev = NULL;
 
 	bh_lock_sock_nested(sk);
