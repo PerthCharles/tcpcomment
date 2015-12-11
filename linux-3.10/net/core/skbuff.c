@@ -439,6 +439,7 @@ EXPORT_SYMBOL(netdev_alloc_frag);
  *
  *	%NULL is returned if there is no free memory.
  */
+/* 网卡设备收到数据后，分配一个skb的函数 */
 struct sk_buff *__netdev_alloc_skb(struct net_device *dev,
 				   unsigned int length, gfp_t gfp_mask)
 {
@@ -465,7 +466,10 @@ struct sk_buff *__netdev_alloc_skb(struct net_device *dev,
 	}
 	if (likely(skb)) {
 		skb_reserve(skb, NET_SKB_PAD);
-		skb->dev = dev;
+        /* 标记skb从哪个dev设备来的，TODO-DONE: 但为何还有一个skb->dev_iif 存在呢？ */
+        /* skb->dev是表示与这个SKB关联的网卡设备，有可能是发送设备，
+         * 但skb->dev_iif是表示的SKB的接收设备index, 可理解为 in-if */
+		skb->dev = dev;     
 	}
 	return skb;
 }

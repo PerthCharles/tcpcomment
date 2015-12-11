@@ -172,6 +172,7 @@ struct ipv4_config {
 };
 
 extern struct ipv4_config ipv4_config;
+/* 根据field 去制定的net namespace 中获取计数器值 */
 #define IP_INC_STATS(net, field)	SNMP_INC_STATS64((net)->mib.ip_statistics, field)
 #define IP_INC_STATS_BH(net, field)	SNMP_INC_STATS64_BH((net)->mib.ip_statistics, field)
 #define IP_ADD_STATS(net, field, val)	SNMP_ADD_STATS64((net)->mib.ip_statistics, field, val)

@@ -1281,6 +1281,7 @@ struct net_device {
 
 #ifdef CONFIG_NET_NS
 	/* Network namespace this network device is inside */
+    /* net device结构体有一个指向自己属于的net namespace的指针 */
 	struct net		*nd_net;
 #endif
 
@@ -1398,6 +1399,7 @@ struct netdev_queue *netdev_get_tx_queue(const struct net_device *dev,
 	return &dev->_tx[index];
 }
 
+/* 遍历发送队列 */
 static inline void netdev_for_each_tx_queue(struct net_device *dev,
 					    void (*f)(struct net_device *,
 						      struct netdev_queue *,
@@ -1604,6 +1606,7 @@ extern rwlock_t				dev_base_lock;		/* Device list lock */
 extern seqcount_t	devnet_rename_seq;	/* Device rename seq */
 
 
+/* 遍历net devices */
 #define for_each_netdev(net, d)		\
 		list_for_each_entry(d, &(net)->dev_base_head, dev_list)
 #define for_each_netdev_reverse(net, d)	\

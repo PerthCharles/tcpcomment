@@ -777,7 +777,7 @@ EXPORT_SYMBOL(dev_get_by_index_rcu);
  *	had a reference added and the pointer is safe until the user calls
  *	dev_put to indicate they have finished with it.
  */
-
+/* 根据ifindex找net device */
 struct net_device *dev_get_by_index(struct net *net, int ifindex)
 {
 	struct net_device *dev;
@@ -3423,6 +3423,8 @@ static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
 
 	net_timestamp_check(!netdev_tstamp_prequeue, skb);
 
+    /* 额，这个有ftrace可以追踪网卡收的skb么
+     * TODO: 确认一下 */
 	trace_netif_receive_skb(skb);
 
 	/* if we've gotten here through NAPI, check netpoll */
@@ -3441,6 +3443,7 @@ static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
 	rcu_read_lock();
 
 another_round:
+    /* 这难道就是唯一标记skb从哪个网卡收到的地方？ */
 	skb->skb_iif = skb->dev->ifindex;
 
 	__this_cpu_inc(softnet_data.processed);
