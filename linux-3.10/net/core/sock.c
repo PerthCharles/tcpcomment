@@ -2293,7 +2293,7 @@ void lock_sock_nested(struct sock *sk, int subclass)
 	spin_lock_bh(&sk->sk_lock.slock);
 	if (sk->sk_lock.owned)
 		__lock_sock(sk);
-	sk->sk_lock.owned = 1;
+	sk->sk_lock.owned = 1;  /* 给sock 加锁 */
 	spin_unlock(&sk->sk_lock.slock);
 	/*
 	 * The sk_lock has mutex_lock() semantics here:

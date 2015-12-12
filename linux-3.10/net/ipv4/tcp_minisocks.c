@@ -793,9 +793,11 @@ int tcp_child_process(struct sock *parent, struct sock *child,
 	int ret = 0;
 	int state = child->sk_state;
 
-    /* TODO: 实际网络中观测到大量TCP_SYN_RECV状态的socket，是不是由于这个地方sock_owned_by_user判定为真了？ 
+    /* TODO-DONE: 实际网络中观测到大量TCP_SYN_RECV状态的socket，是不是由于这个地方sock_owned_by_user判定为真了？ 
      * 导致无法进行正常的后续处理？
-     * 当然也可能是parent->sk_data_ready()wakeup花的时间太久了*/
+     * 基本可以给出结论：如果看到大量的TCP_SYN_RECV状态，则说明sock有被user占用，
+     * 导致无法进入tcp_rcv_state_process()，完成最后的建连过程，从而无法accept() */
+    /* TODO: 那么问题就变成了，这个刚刚被创建的child sock，什么情况下会被user占用呢？ */
 	if (!sock_owned_by_user(child)) {
 		ret = tcp_rcv_state_process(child, skb, tcp_hdr(skb),
 					    skb->len);
