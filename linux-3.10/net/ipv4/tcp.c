@@ -794,6 +794,7 @@ static unsigned int tcp_xmit_size_goal(struct sock *sk, u32 mss_now,
 				  tp->tcp_header_len);
 
 		/* TSQ : try to have two TSO segments in flight */
+        /* 保持至少两个TSO段能够被发送 */
 		xmit_size_goal = min_t(u32, xmit_size_goal,
 				       sysctl_tcp_limit_output_bytes >> 1);
 

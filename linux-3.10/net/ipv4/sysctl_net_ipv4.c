@@ -647,6 +647,7 @@ static struct ctl_table ipv4_table[] = {
 		.proc_handler	= proc_dointvec
 	},
 	{
+        /* TCP Small Queue机制，限制单条TCP流最多发送的未被确认的字节数 */
 		.procname	= "tcp_limit_output_bytes",
 		.data		= &sysctl_tcp_limit_output_bytes,
 		.maxlen		= sizeof(int),

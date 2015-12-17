@@ -51,6 +51,8 @@ int sysctl_tcp_retrans_collapse __read_mostly = 1;
 int sysctl_tcp_workaround_signed_windows __read_mostly = 0;
 
 /* Default TSQ limit of two TSO segments */
+/* 一个TSO segment的最大值为GSO_MAX_SIZE, 等于64KB。 
+ * TSQ机制默认限制的字节数等于两个最大的TSO段 */
 int sysctl_tcp_limit_output_bytes __read_mostly = 131072;
 
 /* This limits the percentage of the congestion window which we
@@ -735,14 +737,18 @@ static void tcp_tasklet_func(unsigned long data)
 		bh_lock_sock(sk);
 
 		if (!sock_owned_by_user(sk)) {
+            /* 接着发送数据 */
 			tcp_tsq_handler(sk);
 		} else {
 			/* defer the work to tcp_release_cb() */
+            /* 如果sock被用户占用，则延迟发送。打上DEFERRED标记 */
 			set_bit(TCP_TSQ_DEFERRED, &tp->tsq_flags);
 		}
 		bh_unlock_sock(sk);
 
+        /* 清除TSQ的排队标记 */
 		clear_bit(TSQ_QUEUED, &tp->tsq_flags);
+        /* TSQ机制下的skb释放放到了这里 */
 		sk_free(sk);
 	}
 }
@@ -758,6 +764,8 @@ static void tcp_tasklet_func(unsigned long data)
  * called from release_sock() to perform protocol dependent
  * actions before socket release.
  */
+/* 内核在处理收到的数据包时，如果发现sock被用户占用着，则只能defer 操作
+ * 之后在用户释放sock时，根据打上的标志，来接着进行内核想做的事情 */
 void tcp_release_cb(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -771,6 +779,7 @@ void tcp_release_cb(struct sock *sk)
 		nflags = flags & ~TCP_DEFERRED_ALL;
 	} while (cmpxchg(&tp->tsq_flags, flags, nflags) != flags);
 
+    /* 之前进行过TSQ DEFER */
 	if (flags & (1UL << TCP_TSQ_DEFERRED))
 		tcp_tsq_handler(sk);
 
@@ -808,12 +817,29 @@ void __init tcp_tasklet_init(void)
  * We cant xmit new skbs from this context, as we might already
  * hold qdisc lock.
  */
+/* 为什么好端端的应该释放skb的时候，却被复用来作为TSQ新数据的发送呢？
+ * 读完一下几点分析，应该就明白了：
+ *      a. skb该释放的时候肯定是要释放的。即使在使用TSQ机制时。
+ *         TSQ机制中，skb的释放移到了tcp_tasklet_func()中
+ *      b. 试想一下skb的释放意味着什么？ skb不再被需要了，说明这个skb已经处理完了
+ *      c. 使用sysctl_tcp_limit_output_bytes限制数据的发送后，总要找个机会接着发送吧？
+ *      有两种选择：使用一个新的timer，或者找到准确的应该"接着发送的时机"
+ *
+ *  综上分析：一个skb被处理完之后，就是TSQ机制接着发送数据的最佳、最准确的时机
+ *  起始TSQ对应的patch已经解释过了，看来还是要结合patch看代码啊。patch里面的解释太重要的了！
+ *      As skb destructor cannot restart xmit itself (as qdisc lock might be
+ *      taken at this point), we delegate the work to a tasklet. We use one
+ *      tasklet per cpu for performance reasons.
+ */
 void tcp_wfree(struct sk_buff *skb)
 {
 	struct sock *sk = skb->sk;
 	struct tcp_sock *tp = tcp_sk(sk);
 
+    /* 清除THROTTLED标记，并判断上一次是否由于超于阈值限制了数据包的发送 */
 	if (test_and_clear_bit(TSQ_THROTTLED, &tp->tsq_flags) &&
+        /* 并且原来没有设置过TSQ_QUEUED标记
+         * 则设置TSQ_QUEUED标记，并开始继续发送之前被限制发送的数据 */
 	    !test_and_set_bit(TSQ_QUEUED, &tp->tsq_flags)) {
 		unsigned long flags;
 		struct tsq_tasklet *tsq;
@@ -827,6 +853,7 @@ void tcp_wfree(struct sk_buff *skb)
 		local_irq_save(flags);
 		tsq = &__get_cpu_var(tsq_tasklet);
 		list_add(&tp->tsq_node, &tsq->head);
+        /* 调用tcp_tasklet_func()继续发送数据包 *
 		tasklet_schedule(&tsq->tasklet);
 		local_irq_restore(flags);
 	} else {
@@ -905,8 +932,12 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	skb_push(skb, tcp_header_size);
 	skb_reset_transport_header(skb);
 
+    /* skb马上就要从TCP层离开，进入IP层了，
+     * 所以如果在TCP层有'析构函数'要被调用的话，就应该在此时调用了。
+     * 之后则会重新对'析构函数'进行赋值 */
 	skb_orphan(skb);
 	skb->sk = sk;
+    /* 如果开启TSO机制，则使用tcp_wfree负责销毁skb结构体 */
 	skb->destructor = (sysctl_tcp_limit_output_bytes > 0) ?
 			  tcp_wfree : sock_wfree;
 	atomic_add(skb->truesize, &sk->sk_wmem_alloc);
@@ -1925,6 +1956,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 		/* TSQ : sk_wmem_alloc accounts skb truesize,
 		 * including skb overhead. But thats OK.
 		 */
+        /* 如果单条TCP流使用的用于发送的内存超过阈值，则标记为TSQ_THROTTLED，并停止发送 */
 		if (atomic_read(&sk->sk_wmem_alloc) >= sysctl_tcp_limit_output_bytes) {
 			set_bit(TSQ_THROTTLED, &tp->tsq_flags);
 			break;

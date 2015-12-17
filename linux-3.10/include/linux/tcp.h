@@ -328,10 +328,12 @@ struct tcp_sock {
 	struct request_sock *fastopen_rsk;
 };
 
+/* 可见tsq_flags并不仅仅是TSQ机制的flag，还被复用与其他场景。毕竟在内核中能省则省 */
 enum tsq_flags {
-	TSQ_THROTTLED,
-	TSQ_QUEUED,
-	TCP_TSQ_DEFERRED,	   /* tcp_tasklet_func() found socket was owned */
+	TSQ_THROTTLED,      /* 发送的字节数超过阈值，则打上该标记。限制数据包的发送 */
+	TSQ_QUEUED,         
+	TCP_TSQ_DEFERRED,	   /* tcp_tasklet_func() found socket was owned */ /* 想发送数据时，sock被占用了所以要延迟 */
+
 	TCP_WRITE_TIMER_DEFERRED,  /* tcp_write_timer() found socket was owned */
 	TCP_DELACK_TIMER_DEFERRED, /* tcp_delack_timer() found socket was owned */
 	TCP_MTU_REDUCED_DEFERRED,  /* tcp_v{4|6}_err() could not call
