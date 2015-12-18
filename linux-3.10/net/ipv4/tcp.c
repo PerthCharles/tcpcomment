@@ -379,6 +379,7 @@ void tcp_init_sock(struct sock *sk)
     /* 初始化tcp中的三个定时器：重传定时器，延迟确认定时器，保活定时器 */
 	tcp_init_xmit_timers(sk);
 	tcp_prequeue_init(tp);
+    /* 初始化挂载TSQ tasklet的list */
 	INIT_LIST_HEAD(&tp->tsq_node);
 
 	icsk->icsk_rto = TCP_TIMEOUT_INIT;
@@ -794,7 +795,7 @@ static unsigned int tcp_xmit_size_goal(struct sock *sk, u32 mss_now,
 				  tp->tcp_header_len);
 
 		/* TSQ : try to have two TSO segments in flight */
-        /* 保持至少两个TSO段能够被发送 */
+        /* 调小TSQ的上限会相应的降低TSO segment大小的上限  */
 		xmit_size_goal = min_t(u32, xmit_size_goal,
 				       sysctl_tcp_limit_output_bytes >> 1);
 

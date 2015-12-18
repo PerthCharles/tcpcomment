@@ -400,6 +400,7 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 		newtp->snd_nxt = newtp->snd_up = treq->snt_isn + 1;
 
 		tcp_prequeue_init(newtp);
+        /* 被动建联时，初始化挂载TSQ tasklet的list */
 		INIT_LIST_HEAD(&newtp->tsq_node);
 
 		tcp_init_wl(newtp, treq->rcv_isn);

@@ -328,7 +328,7 @@ struct tcp_sock {
 	struct request_sock *fastopen_rsk;
 };
 
-/* 可见tsq_flags并不仅仅是TSQ机制的flag，还被复用与其他场景。毕竟在内核中能省则省 */
+/* 可见tsq_flags已经并不仅仅是TSQ机制的flag，还被复用与其他场景。毕竟在内核中能省则省 */
 enum tsq_flags {
 	TSQ_THROTTLED,      /* 发送的字节数超过阈值，则打上该标记。限制数据包的发送 */
 	TSQ_QUEUED,         

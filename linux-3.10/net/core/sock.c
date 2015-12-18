@@ -2314,6 +2314,7 @@ void release_sock(struct sock *sk)
 	if (sk->sk_backlog.tail)
 		__release_sock(sk);
 
+    /* 释放sock时，处理协议相关的动作，如tcp_release_cb() */
 	if (sk->sk_prot->release_cb)
 		sk->sk_prot->release_cb(sk);
 

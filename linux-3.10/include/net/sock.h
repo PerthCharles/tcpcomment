@@ -930,6 +930,7 @@ struct proto {
 	int			(*backlog_rcv) (struct sock *sk,
 						struct sk_buff *skb);
 
+    /* 释放sock时，用于处理协议相关的动作，如tcp协议对应的就是tcp_release_cb() */
 	void		(*release_cb)(struct sock *sk);
 	void		(*mtu_reduced)(struct sock *sk);
 

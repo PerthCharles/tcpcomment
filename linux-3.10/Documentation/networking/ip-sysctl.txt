@@ -554,6 +554,9 @@ tcp_thin_dupack - BOOLEAN
 	Documentation/networking/tcp-thin.txt
 	Default: 0
 
+/* 限制单条流，放到qdisc+dev队列中的数据总量
+ * 避免在使用pfifo_fast时，一条激进的流导致其他流的latency增加
+ */
 tcp_limit_output_bytes - INTEGER
 	Controls TCP Small Queue limit per tcp socket.
 	TCP bulk sender tends to increase packets in flight until it

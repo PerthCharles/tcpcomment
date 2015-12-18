@@ -697,6 +697,7 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
  * to process all sockets that eventually need to send more skbs.
  * We use one tasklet per cpu, with its own queue of sockets.
  */
+/* TSQ限制的是在qdisc+dev queue中的数据包总量，并不是sndbuf的大小，更不是cwnd的大小 */
 struct tsq_tasklet {
 	struct tasklet_struct	tasklet;
 	struct list_head	head; /* queue of tcp sockets */
@@ -798,6 +799,7 @@ void tcp_release_cb(struct sock *sk)
 }
 EXPORT_SYMBOL(tcp_release_cb);
 
+/* 目前tcp里面的tasklet主要用于TSQ机制 */
 void __init tcp_tasklet_init(void)
 {
 	int i;
@@ -826,7 +828,7 @@ void __init tcp_tasklet_init(void)
  *      有两种选择：使用一个新的timer，或者找到准确的应该"接着发送的时机"
  *
  *  综上分析：一个skb被处理完之后，就是TSQ机制接着发送数据的最佳、最准确的时机
- *  起始TSQ对应的patch已经解释过了，看来还是要结合patch看代码啊。patch里面的解释太重要的了！
+ *  其实TSQ对应的patch已经解释过了，看来还是要结合patch看代码啊。patch里面的解释太重要的了！
  *      As skb destructor cannot restart xmit itself (as qdisc lock might be
  *      taken at this point), we delegate the work to a tasklet. We use one
  *      tasklet per cpu for performance reasons.
@@ -853,7 +855,7 @@ void tcp_wfree(struct sk_buff *skb)
 		local_irq_save(flags);
 		tsq = &__get_cpu_var(tsq_tasklet);
 		list_add(&tp->tsq_node, &tsq->head);
-        /* 调用tcp_tasklet_func()继续发送数据包 *
+        /* 调用tcp_tasklet_func()继续发送数据包 */
 		tasklet_schedule(&tsq->tasklet);
 		local_irq_restore(flags);
 	} else {
@@ -935,6 +937,7 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
     /* skb马上就要从TCP层离开，进入IP层了，
      * 所以如果在TCP层有'析构函数'要被调用的话，就应该在此时调用了。
      * 之后则会重新对'析构函数'进行赋值 */
+    /* 其实下面四行代码与skb_set_owner_w()做的事情几乎一样，不同点仅是destructor赋值 */
 	skb_orphan(skb);
 	skb->sk = sk;
     /* 如果开启TSO机制，则使用tcp_wfree负责销毁skb结构体 */
