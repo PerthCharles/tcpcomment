@@ -18,6 +18,7 @@
 # define sub_preempt_count(val)	do { preempt_count() -= (val); } while (0)
 #endif
 
+/* 增加PREEMPT，从而禁止内核抢占 */
 #define inc_preempt_count() add_preempt_count(1)
 #define dec_preempt_count() sub_preempt_count(1)
 
@@ -58,6 +59,7 @@ do { \
 
 #ifdef CONFIG_PREEMPT_COUNT
 
+/* 禁用内核抢占 */
 #define preempt_disable() \
 do { \
 	inc_preempt_count(); \

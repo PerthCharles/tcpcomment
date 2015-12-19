@@ -118,13 +118,16 @@ struct linux_xfrm_mib {
 
 #define SNMP_ARRAY_SZ 1
 
+/* 定义各个MIB计数器数组指针, 且定义为__percpu变量 */
 #define DEFINE_SNMP_STAT(type, name)	\
 	__typeof__(type) __percpu *name[SNMP_ARRAY_SZ]
+
 #define DEFINE_SNMP_STAT_ATOMIC(type, name)	\
 	__typeof__(type) *name
 #define DECLARE_SNMP_STAT(type, name)	\
 	extern __typeof__(type) __percpu *name[SNMP_ARRAY_SZ]
 
+/* TODO：为什么这里有mibs[field]这个域？哪来的mibs啊？！ */
 #define SNMP_INC_STATS_BH(mib, field)	\
 			__this_cpu_inc(mib[0]->mibs[field])
 

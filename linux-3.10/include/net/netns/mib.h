@@ -5,6 +5,8 @@
 
 /* 这个结构体是隶属于namespace */
 struct netns_mib {
+    /* 下面每一个定义的item，都是指向相应结构的一个指针
+     * 如tcp_statistics是一个指向struct tcp_mib结构体的指针 */
 	DEFINE_SNMP_STAT(struct tcp_mib, tcp_statistics);
 	DEFINE_SNMP_STAT(struct ipstats_mib, ip_statistics);
 	DEFINE_SNMP_STAT(struct linux_mib, net_statistics);

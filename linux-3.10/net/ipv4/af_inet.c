@@ -1521,9 +1521,17 @@ u64 snmp_fold_field64(void __percpu *mib[], int offt, size_t syncp_offset)
 EXPORT_SYMBOL_GPL(snmp_fold_field64);
 #endif
 
+/* 对MIB计数器数组结构体进行初始化
+ * 第一个参数传入的是指向某个结构体数组的指针
+ *      如net->mib.tcp_statistics是指向struct tcp_mib的指针
+ * 但是由于它是percpu类型的变量，需要将它转换成 (void __percpu **)类型的指针 
+ */
 int snmp_mib_init(void __percpu *ptr[2], size_t mibsize, size_t align)
 {
 	BUG_ON(ptr == NULL);
+    /* ptr[0]本质上与net->mib.tcp_statistics指向的内存空间地址是同一个地方！ 
+     * 根据大小来分配percpu变量的内存空间 */
+    /* 由于mib counter的是一个数组，而不是单纯的变量，所以要以alloc形式分配内存空间 */
 	ptr[0] = __alloc_percpu(mibsize, align);
 	if (!ptr[0])
 		return -ENOMEM;
@@ -1596,6 +1604,7 @@ static const struct net_protocol icmp_protocol = {
 	.netns_ok =	1,
 };
 
+/* 对net namespace下的mib相关计数器进行初始化 */
 static __net_init int ipv4_mib_init_net(struct net *net)
 {
 	if (snmp_mib_init((void __percpu **)net->mib.tcp_statistics,

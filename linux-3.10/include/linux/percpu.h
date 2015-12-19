@@ -26,6 +26,8 @@
  * Must be an lvalue. Since @var must be a simple identifier,
  * we force a syntax error here if it isn't.
  */
+/* 获取percpu变量var在当前cpu的值
+ * 为避免发生内核抢占，然后被调度到其他CPU上执行，此操作需要进制内核抢占 */
 #define get_cpu_var(var) (*({				\
 	preempt_disable();				\
 	&__get_cpu_var(var); }))
