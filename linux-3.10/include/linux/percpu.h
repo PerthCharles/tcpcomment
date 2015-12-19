@@ -41,10 +41,12 @@
 	preempt_enable();				\
 } while (0)
 
+/* 获取本处理上面变量var的副本对应的指针，适用于动态percpu变量 */
 #define get_cpu_ptr(var) ({				\
 	preempt_disable();				\
 	this_cpu_ptr(var); })
 
+/* 恢复内核抢占 */
 #define put_cpu_ptr(var) do {				\
 	(void)(var);					\
 	preempt_enable();				\

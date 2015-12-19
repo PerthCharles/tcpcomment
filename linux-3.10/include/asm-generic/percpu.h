@@ -53,6 +53,10 @@ extern unsigned long __per_cpu_offset[NR_CPUS];
  * established ways to produce a usable pointer from the percpu variable
  * offset.
  */
+/* 获取编号cpu的处理器对应的变量var的副本
+ * 宏展开后为：  *(__per_cpu_offset[cpu] + &(var))
+ * __per_cpu_offset[cpu]记录的是编号cpu的percpu空间与内核".data..percpu"静态数据段的偏移量
+ * 加上var在内核中的内存地址 (因为是静态变量，所以地址一定在".data..percpu"有一个地址)*/
 #define per_cpu(var, cpu) \
 	(*SHIFT_PERCPU_PTR(&(var), per_cpu_offset(cpu)))
 

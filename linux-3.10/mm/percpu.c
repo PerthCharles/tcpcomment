@@ -725,9 +725,11 @@ static void __percpu *pcpu_alloc(size_t size, size_t align, bool reserved)
 	spin_lock_irqsave(&pcpu_lock, flags);
 
 	/* serve reserved allocations from the reserved chunk if available */
+    /* 若指定reserved分配，则从pcpu_reserved_chunk进行 */
 	if (reserved && pcpu_reserved_chunk) {
 		chunk = pcpu_reserved_chunk;
 
+        /* 检查要分配的空间size是否超过该chunk的最大连续空闲size */
 		if (size > chunk->contig_hint) {
 			err = "alloc from reserved chunk failed";
 			goto fail_unlock;
@@ -752,8 +754,10 @@ static void __percpu *pcpu_alloc(size_t size, size_t align, bool reserved)
 
 restart:
 	/* search through normal chunks */
+    /* 根据需要分配内存块的大小索引slot数据找到对应链表 */
 	for (slot = pcpu_size_to_slot(size); slot < pcpu_nr_slots; slot++) {
 		list_for_each_entry(chunk, &pcpu_slot[slot], list) {
+            /* 在该链表中寻找符合尺寸要求的chunk */
 			if (size > chunk->contig_hint)
 				continue;
 
@@ -773,6 +777,7 @@ restart:
 				goto restart;
 			}
 
+            /* 从该chunk分配出size大小的空间，返回size空间在chunk中的偏移量off */
 			off = pcpu_alloc_area(chunk, size, align);
 			if (off >= 0)
 				goto area_found;
@@ -1163,6 +1168,7 @@ static void pcpu_dump_alloc_info(const char *lvl,
  * @ai contains all information necessary to initialize the first
  * chunk and prime the dynamic percpu allocator.
  *
+ * struct pcpu_alloc_info 结构体各个item的详细解释
  * @ai->static_size is the size of static percpu area.
  *
  * @ai->reserved_size, if non-zero, specifies the amount of bytes to
@@ -1878,7 +1884,7 @@ void __init setup_per_cpu_areas(void)
 
     /* 内核为percpu分配了一大段空间，在整个percpu空间中根据cpu个数将percpu空间分成不同的unit
      * pcpu_base_addr就是整个系统的percpu的起始内存地址，
-     * __per_cpu_start表示静态分配的percpu起始地址，即".data.percpu"中起始地址
+     * __per_cpu_start表示静态分配的percpu起始地址，即".data..percpu"中起始地址
      */
 	delta = (unsigned long)pcpu_base_addr - (unsigned long)__per_cpu_start;
     /* 遍历系统中的cpu，设置每个cpu的__per_cpu_offset指针
@@ -1889,7 +1895,7 @@ void __init setup_per_cpu_areas(void)
      *          + ======================== +    <== 内核镜像起始地址
      *          |                          |
      *          | ------------------------ | <-- __per_cpu_start
-     *          | |    .date.percpu段    | |      
+     *          | |   .date..percpu段    | |      
      *          | ------------------------ | <-- __per_cpu_end
      *          |                          |
      *          + ======================== +    <== 内核镜像结束地址

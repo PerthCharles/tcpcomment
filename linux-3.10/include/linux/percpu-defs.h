@@ -87,6 +87,10 @@
 #define DECLARE_PER_CPU(type, name)					\
 	DECLARE_PER_CPU_SECTION(type, name, "")
 
+/* 编译期间分配percpu，即分配静态percpu变量 */
+/* 宏的作用就是将类型为'type'的'name'变量放到'.data..percpu' 数据段
+ * 之后在系统对percpu初始化的时候，会将静态定义的percpu变量拷贝到每个cpu的
+ * percpu内存空间中 */
 #define DEFINE_PER_CPU(type, name)					\
 	DEFINE_PER_CPU_SECTION(type, name, "")
 
