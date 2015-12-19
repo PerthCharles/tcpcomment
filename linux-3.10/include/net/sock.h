@@ -187,7 +187,7 @@ struct sock_common {
 		struct hlist_node	skc_bind_node;
 		struct hlist_nulls_node skc_portaddr_node;
 	};
-	struct proto		*skc_prot;
+	struct proto		*skc_prot;  /* 具体协议的处理函数，如tcp协议就是tcp_prot */
 #ifdef CONFIG_NET_NS
 	struct net	 	*skc_net;
 #endif
@@ -1670,6 +1670,7 @@ static inline int sk_tx_queue_get(const struct sock *sk)
 	return sk ? sk->sk_tx_queue_mapping : -1;
 }
 
+/* 将内核中的sock与BSD socket建立对应关系 */
 static inline void sk_set_socket(struct sock *sk, struct socket *sock)
 {
 	sk_tx_queue_clear(sk);

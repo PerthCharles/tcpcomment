@@ -3403,6 +3403,7 @@ void tcp_init_mem(struct net *net)
 	net->ipv4.sysctl_tcp_mem[2] = net->ipv4.sysctl_tcp_mem[0] * 2;
 }
 
+/* 初始化tcp相关的内容 */
 void __init tcp_init(void)
 {
 	struct sk_buff *skb = NULL;
@@ -3482,7 +3483,9 @@ void __init tcp_init(void)
 
 	tcp_metrics_init();
 
+    /* 注册系统必须增加的tcp_reno算法 */
 	tcp_register_congestion_control(&tcp_reno);
 
+    /* 初始化tcp用的tasklet，目前仅用于TSQ机制 */
 	tcp_tasklet_init();
 }

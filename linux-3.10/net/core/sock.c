@@ -1323,6 +1323,8 @@ struct sock *sk_alloc(struct net *net, int family, gfp_t priority,
 		 * See comment in struct sock definition to understand
 		 * why we need sk_prot_creator -acme
 		 */
+        /* 这里将根据BSD socket type找到的具体协议的操作函数进行初始化
+         * 对于tcp协议来说，就是struct tcp_prot*/
 		sk->sk_prot = sk->sk_prot_creator = prot;
 		sock_lock_init(sk);
         /* 设置net namespace */
@@ -2241,15 +2243,15 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 	sk->sk_allocation	=	GFP_KERNEL;
 	sk->sk_rcvbuf		=	sysctl_rmem_default;
 	sk->sk_sndbuf		=	sysctl_wmem_default;
-	sk->sk_state		=	TCP_CLOSE;
-	sk_set_socket(sk, sock);
+	sk->sk_state		=	TCP_CLOSE;  /* sock默认是TCP_CLOSE状态 */
+	sk_set_socket(sk, sock);    /* 将内核sock与BSD socket建立对应关系 */
 
 	sock_set_flag(sk, SOCK_ZAPPED);
 
 	if (sock) {
 		sk->sk_type	=	sock->type;
 		sk->sk_wq	=	sock->wq;
-		sock->sk	=	sk;
+		sock->sk	=	sk;     /* 建立BSD socket与sock之间的关系 */
 	} else
 		sk->sk_wq	=	NULL;
 
@@ -2260,7 +2262,7 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 			af_family_clock_key_strings[sk->sk_family]);
 
 	sk->sk_state_change	=	sock_def_wakeup;
-	sk->sk_data_ready	=	sock_def_readable;      /* 唯一像是初始化sk->sk_data_ready的地方 */
+	sk->sk_data_ready	=	sock_def_readable;    /* 唯一像是初始化sk->sk_data_ready的地方 */
 	sk->sk_write_space	=	sock_def_write_space;
 	sk->sk_error_report	=	sock_def_error_report;
 	sk->sk_destruct		=	sock_def_destruct;

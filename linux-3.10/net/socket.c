@@ -2587,7 +2587,7 @@ SYSCALL_DEFINE2(socketcall, int, call, unsigned long __user *, args)
  *	socket interface. The value ops->family coresponds to the
  *	socket system call protocol family.
  */
-/* 注册一种BSD socket类型 */
+/* 注册一种BSD socket 协议族(family), 如inet family就是inet_family_ops */
 int sock_register(const struct net_proto_family *ops)
 {
 	int err;

@@ -123,6 +123,9 @@
 /* The inetsw table contains everything that inet_create needs to
  * build a new socket.
  */
+/* 在sys_socket()中指定BSD socket type，就是为了在inetsw找到
+ * 创建该类型socket所对应的inet_protosw结构体, 其实更进一步的是找到
+ * 具体协议的struct proto结构体和相关的BSD操作结构体struct proto_ops */
 static struct list_head inetsw[SOCK_MAX];
 static DEFINE_SPINLOCK(inetsw_lock);
 
@@ -413,6 +416,8 @@ lookup_protocol:
 	}
 
 	if (sk->sk_prot->init) {
+        /* 对于TCP协议，这里调用的是：tcp_v4_init_sock() */
+        /* 继续初始化tcp_sock结构体 */
 		err = sk->sk_prot->init(sk);
 		if (err)
 			sk_common_release(sk);
@@ -1026,6 +1031,7 @@ static const struct proto_ops inet_sockraw_ops = {
 };
 
 /* PF_INET对应的结构体，看名字也知道关键就是inet_create() */
+/* inet family的操作函数 */
 static const struct net_proto_family inet_family_ops = {
 	.family = PF_INET,
 	.create = inet_create,
@@ -1035,9 +1041,12 @@ static const struct net_proto_family inet_family_ops = {
 /* Upon startup we insert all the elements in inetsw_array[] into
  * the linked list inetsw.
  */
+/* 所有该数组中的协议，将在初始化是插入到inetsw 列表中 */
+/* 这个数组很关键，里面初始化了重要的.proto指针和.ops指针 */
 static struct inet_protosw inetsw_array[] =
 {
 	{
+        /* TCP 协议 */
 		.type =       SOCK_STREAM,
 		.protocol =   IPPROTO_TCP,
 		.prot =       &tcp_prot,
@@ -1048,6 +1057,7 @@ static struct inet_protosw inetsw_array[] =
 	},
 
 	{
+        /* UDP协议 */
 		.type =       SOCK_DGRAM,
 		.protocol =   IPPROTO_UDP,
 		.prot =       &udp_prot,
@@ -1057,6 +1067,7 @@ static struct inet_protosw inetsw_array[] =
        },
 
        {
+        /* ICMP协议 */
 		.type =       SOCK_DGRAM,
 		.protocol =   IPPROTO_ICMP,
 		.prot =       &ping_prot,
@@ -1066,6 +1077,7 @@ static struct inet_protosw inetsw_array[] =
        },
 
        {
+           /* RAW socket，即单纯的IP协议 */
 	       .type =       SOCK_RAW,
 	       .protocol =   IPPROTO_IP,	/* wild card */
 	       .prot =       &raw_prot,
@@ -1713,6 +1725,7 @@ static struct packet_type ip_packet_type __read_mostly = {
 	.func = ip_rcv,
 };
 
+/* inet family的初始化： 注册到inetsw list中去 */
 static int __init inet_init(void)
 {
 	struct inet_protosw *q;
@@ -1721,10 +1734,12 @@ static int __init inet_init(void)
 
 	BUILD_BUG_ON(sizeof(struct inet_skb_parm) > FIELD_SIZEOF(struct sk_buff, cb));
 
+    /* 保留端口的proc结构对应的bitmap */
 	sysctl_local_reserved_ports = kzalloc(65536 / 8, GFP_KERNEL);
 	if (!sysctl_local_reserved_ports)
 		goto out;
 
+    /* 注册inet family中的TCP协议 */
 	rc = proto_register(&tcp_prot, 1);
 	if (rc)
 		goto out_free_reserved_ports;
@@ -1744,7 +1759,7 @@ static int __init inet_init(void)
 	/*
 	 *	Tell SOCKET that we are alive...
 	 */
-
+    /* 注册inet family的操作函数 */
 	(void)sock_register(&inet_family_ops);
 
 #ifdef CONFIG_SYSCTL
@@ -1841,6 +1856,7 @@ out_free_reserved_ports:
 	goto out;
 }
 
+/* 系统启动是调用inet_init */
 fs_initcall(inet_init);
 
 /* ------------------------------------------------------------------------ */

@@ -78,8 +78,14 @@ struct inet_protosw {
 	unsigned short	 type;	   /* This is the 2nd argument to socket(2). */
 	unsigned short	 protocol; /* This is the L4 protocol number.  */
 
-	struct proto	 *prot;
-	const struct proto_ops *ops;
+    /* 调用逻辑描述如下：
+     *      当一个BSD socket相关的系统调用被调用，
+     *      首先会执行proto_ops结构体中的处理函数，
+     *      然后再执行proto结构体中的处理函数 */
+    /* 具体协议的操作函数，如tcp协议就是tcp_prot */
+	struct proto	 *prot;         
+    /* BSD socket层对应的处理函数集合，如inet_stream_ops 对应为SOCK_STREAM */
+	const struct proto_ops *ops;    
   
 	char             no_check;   /* checksum on rcv/xmit/none? */
 	unsigned char	 flags;      /* See INET_PROTOSW_* below.  */

@@ -33,8 +33,8 @@ struct file;
 struct net;
 
 #define SOCK_ASYNC_NOSPACE	0
-#define SOCK_ASYNC_WAITDATA	1
-#define SOCK_NOSPACE		2
+#define SOCK_ASYNC_WAITDATA	1 
+#define SOCK_NOSPACE		2       /* sndbuf用完了，没有空间写数据了 */
 #define SOCK_PASSCRED		3
 #define SOCK_PASSSEC		4
 #define SOCK_EXTERNALLY_ALLOCATED 5
@@ -101,6 +101,7 @@ struct socket_wq {
  *  @sk: internal networking protocol agnostic socket representation
  *  @wq: wait queue for several uses
  */
+/* BSD socket的结构体 */
 struct socket {
 	socket_state		state;
 
@@ -112,9 +113,9 @@ struct socket {
 
 	struct socket_wq __rcu	*wq;
 
-	struct file		*file;
-	struct sock		*sk;
-	const struct proto_ops	*ops;
+	struct file		*file;      /* 指向对应的FD */
+	struct sock		*sk;        /* 指向对应的内核sock */
+	const struct proto_ops	*ops;   /* BSD socket层对应的处理函数 */
 };
 
 struct vm_area_struct;

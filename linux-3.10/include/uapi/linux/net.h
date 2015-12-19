@@ -47,10 +47,15 @@
 
 /* BSD socket的状态 */
 typedef enum {
+    /* 未分配socket */
 	SS_FREE = 0,			/* not allocated		*/
-	SS_UNCONNECTED,			/* unconnected to any socket	*/  /* BSD socket在刚分配时的默认状态 */
+    /* BSD socket在刚分配时的默认状态 */
+	SS_UNCONNECTED,			/* unconnected to any socket	*/  
+    /* 正在建立socket的连接 */
 	SS_CONNECTING,			/* in process of connecting	*/
+    /* socket连接建立成功 */
 	SS_CONNECTED,			/* connected to socket		*/
+    /* 正在断开socket连接 */
 	SS_DISCONNECTING		/* in process of disconnecting	*/
 } socket_state;
 
