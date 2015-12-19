@@ -199,11 +199,17 @@ out:
 }
 EXPORT_SYMBOL(inode_init_always);
 
+/* 分配一个inode
+ * 如果是BSD socket要用到的inode类型，会同时分配BSD socket结构体需要的内存，
+ * 具体做法就是使用自定义的alloc_inode函数 */
 static struct inode *alloc_inode(struct super_block *sb)
 {
 	struct inode *inode;
 
+    /* 如果有自定义的分配函数，则使用自定义的分配函数 
+     * 如在分配BSD socket对应的inode时，该分配函数就是: sock_alloc_inode() */
 	if (sb->s_op->alloc_inode)
+        /* 奇怪的是cscope居然没有解析到 /net/socket.c下的sock_alloc_inode()函数 */
 		inode = sb->s_op->alloc_inode(sb);
 	else
 		inode = kmem_cache_alloc(inode_cachep, GFP_KERNEL);

@@ -178,6 +178,7 @@ struct proto_ops {
 #define DECLARE_SOCKADDR(type, dst, src)	\
 	type dst = ({ __sockaddr_check_size(sizeof(*dst)); (type) src; })
 
+/* address family的结构体，关键的就是create函数 */
 struct net_proto_family {
 	int		family;
 	int		(*create)(struct net *net, struct socket *sock,

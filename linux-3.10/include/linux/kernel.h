@@ -780,6 +780,9 @@ static inline void ftrace_dump(enum ftrace_dump_mode oops_dump_mode) { }
  * @member:	the name of the member within the struct.
  *
  */
+/* 将指向结构体内部一个item的指针，转换成执行结构体的指针
+ * 比如a是结构体A中的一个元素，该宏定义就是将指向a的ptr转换成为指向A的ptr
+ * 具体转换是利用item在结构体中的offset做到的 */
 #define container_of(ptr, type, member) ({			\
 	const typeof( ((type *)0)->member ) *__mptr = (ptr);	\
 	(type *)( (char *)__mptr - offsetof(type,member) );})

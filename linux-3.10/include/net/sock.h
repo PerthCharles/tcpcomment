@@ -1334,8 +1334,10 @@ struct socket_alloc {
 	struct inode vfs_inode;
 };
 
+/* 根据inode指针，返回指向"属于同一个socket_alloc结构体的BSD socket结构体"的指针 */
 static inline struct socket *SOCKET_I(struct inode *inode)
 {
+    /* socket_alloc结构体就在上面定义的，实际就是将BSD socket和inode放在了一起 */
 	return &container_of(inode, struct socket_alloc, vfs_inode)->socket;
 }
 

@@ -23,6 +23,7 @@
 
 #define NPROTO		AF_MAX
 
+/* BSD socket framework相关的系统调用 */
 #define SYS_SOCKET	1		/* sys_socket(2)		*/
 #define SYS_BIND	2		/* sys_bind(2)			*/
 #define SYS_CONNECT	3		/* sys_connect(2)		*/
@@ -44,9 +45,10 @@
 #define SYS_RECVMMSG	19		/* sys_recvmmsg(2)		*/
 #define SYS_SENDMMSG	20		/* sys_sendmmsg(2)		*/
 
+/* BSD socket的状态 */
 typedef enum {
 	SS_FREE = 0,			/* not allocated		*/
-	SS_UNCONNECTED,			/* unconnected to any socket	*/
+	SS_UNCONNECTED,			/* unconnected to any socket	*/  /* BSD socket在刚分配时的默认状态 */
 	SS_CONNECTING,			/* in process of connecting	*/
 	SS_CONNECTED,			/* connected to socket		*/
 	SS_DISCONNECTING		/* in process of disconnecting	*/

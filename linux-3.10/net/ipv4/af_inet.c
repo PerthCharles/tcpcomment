@@ -273,7 +273,6 @@ EXPORT_SYMBOL(build_ehash_secret);
 /*
  *	Create an inet socket.
  */
-
 static int inet_create(struct net *net, struct socket *sock, int protocol,
 		       int kern)
 {
@@ -288,19 +287,24 @@ static int inet_create(struct net *net, struct socket *sock, int protocol,
 
 	if (unlikely(!inet_ehash_secret))
 		if (sock->type != SOCK_RAW && sock->type != SOCK_DGRAM)
+            /* TODO: 这是在干嘛？ */
 			build_ehash_secret();
 
+    /* 再次将BSD socket的状态设置为unconnected状态 */
 	sock->state = SS_UNCONNECTED;
 
 	/* Look for the requested type/protocol pair. */
 lookup_protocol:
 	err = -ESOCKTNOSUPPORT;
 	rcu_read_lock();
+    /* 遍历sock->type这类BSD socket的所有支持的protocol类型，一般选择默认的 */
 	list_for_each_entry_rcu(answer, &inetsw[sock->type], list) {
 
 		err = 0;
 		/* Check the non-wild match. */
+        /* 下面这些代码都是因为支持protocol设置为0而产生的 */
 		if (protocol == answer->protocol) {
+            /* IPPROTO_IP值为0 */
 			if (protocol != IPPROTO_IP)
 				break;
 		} else {
@@ -342,6 +346,7 @@ lookup_protocol:
 	    !ns_capable(net->user_ns, CAP_NET_RAW))
 		goto out_rcu_unlock;
 
+    /* 根据找到的answer初始化BSD socket */
 	sock->ops = answer->ops;
 	answer_prot = answer->prot;
 	answer_no_check = answer->no_check;
@@ -351,6 +356,7 @@ lookup_protocol:
 	WARN_ON(answer_prot->slab == NULL);
 
 	err = -ENOBUFS;
+    /* 分配内核struct sock的结构体 */
 	sk = sk_alloc(net, PF_INET, GFP_KERNEL, answer_prot);
 	if (sk == NULL)
 		goto out;
@@ -1019,6 +1025,7 @@ static const struct proto_ops inet_sockraw_ops = {
 #endif
 };
 
+/* PF_INET对应的结构体，看名字也知道关键就是inet_create() */
 static const struct net_proto_family inet_family_ops = {
 	.family = PF_INET,
 	.create = inet_create,

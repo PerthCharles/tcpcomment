@@ -154,7 +154,7 @@ static const struct file_operations socket_file_ops = {
 /*
  *	The protocol list. Each protocol is registered in here.
  */
-
+/* net_families是一个预先分配的结构体指针数组，所以它是有固定大小的 */
 static DEFINE_SPINLOCK(net_family_lock);
 static const struct net_proto_family __rcu *net_families[NPROTO] __read_mostly;
 
@@ -237,8 +237,10 @@ static int move_addr_to_user(struct sockaddr_storage *kaddr, int klen,
 
 static struct kmem_cache *sock_inode_cachep __read_mostly;
 
+/* 同时分配BSD socket和对应的inode */
 static struct inode *sock_alloc_inode(struct super_block *sb)
 {
+    /* socket_alloc结构体同时包含BSD socket结构体和inode结构体 */
 	struct socket_alloc *ei;
 	struct socket_wq *wq;
 
@@ -254,11 +256,12 @@ static struct inode *sock_alloc_inode(struct super_block *sb)
 	wq->fasync_list = NULL;
 	RCU_INIT_POINTER(ei->socket.wq, wq);
 
+    /* 刚分配BSD socket时的状态设置 */
 	ei->socket.state = SS_UNCONNECTED;
 	ei->socket.flags = 0;
-	ei->socket.ops = NULL;
-	ei->socket.sk = NULL;
-	ei->socket.file = NULL;
+	ei->socket.ops = NULL;      /* 这个BSD socket对应的操作函数也还没有确定 */
+	ei->socket.sk = NULL;       /* 此时还没有分配kernel中的struct sock结构体 */
+	ei->socket.file = NULL;     /* 也还没有分配对应的文件 */
 
 	return &ei->vfs_inode;
 }
@@ -295,6 +298,7 @@ static int init_inodecache(void)
 	return 0;
 }
 
+/* 分配BSD socket对应的inode时，对应的处理函数 */
 static const struct super_operations sockfs_ops = {
 	.alloc_inode	= sock_alloc_inode,
 	.destroy_inode	= sock_destroy_inode,
@@ -526,16 +530,24 @@ static const struct inode_operations sockfs_inode_ops = {
  *	and initialised. The socket is then returned. If we are out of inodes
  *	NULL is returned.
  */
-
+/* 核心任务：分配一个BSD socket
+ * 同时要做的事情：将这个BSD socket与一个inode建立联系 */
 static struct socket *sock_alloc(void)
 {
 	struct inode *inode;
 	struct socket *sock;
 
+    /* sock_mnt是表示BSD socket在VFS framework下的mount结构体，
+     * mnt_sb表示mount位置对应的super block 
+     * 这部分属于VFS内容，具体细节就不深究了。
+     * 只要知道对于mnt_sb来讲，它会同时分配BSD socket和inode就可以了 */
 	inode = new_inode_pseudo(sock_mnt->mnt_sb);
 	if (!inode)
 		return NULL;
 
+    /* 将inode指针，转换为sock指针。对，这里就是转换一个指针而已
+     * TODO-DONE: 真实的BSD socket的分配，已经在分配inode的时候分配了？ 
+     * 是的，具体是在sock_alloc_inode()中分配的 */
 	sock = SOCKET_I(inode);
 
 	kmemcheck_annotate_bitfield(sock, type);
@@ -545,6 +557,7 @@ static struct socket *sock_alloc(void)
 	inode->i_gid = current_fsgid();
 	inode->i_op = &sockfs_inode_ops;
 
+    /* 原来还有计数器记录当前CPU使用的BSD socket数量 */
 	this_cpu_add(sockets_in_use, 1);
 	return sock;
 }
@@ -1232,6 +1245,7 @@ call_kill:
 }
 EXPORT_SYMBOL(sock_wake_async);
 
+/* 创建BSD socket */
 int __sock_create(struct net *net, int family, int type, int protocol,
 			 struct socket **res, int kern)
 {
@@ -1271,6 +1285,7 @@ int __sock_create(struct net *net, int family, int type, int protocol,
 	 *	the protocol is 0, the family is instructed to select an appropriate
 	 *	default.
 	 */
+    /* 终于要实际的BSD socket了 */
 	sock = sock_alloc();
 	if (!sock) {
 		net_warn_ratelimited("socket: no more sockets\n");
@@ -1278,6 +1293,11 @@ int __sock_create(struct net *net, int family, int type, int protocol,
 				   closest posix thing */
 	}
 
+    /* 标记BSD socket类型
+     * 利用sock->type的逻辑：
+     *  a. 首先根据family值，找到pf
+     *  b. 调用pf->create()
+     *  c. 根据sock->type，在create函数中做不同的选择 */
 	sock->type = type;
 
 #ifdef CONFIG_MODULES
@@ -1292,6 +1312,8 @@ int __sock_create(struct net *net, int family, int type, int protocol,
 #endif
 
 	rcu_read_lock();
+    /* 根据address family，获取相应的处理结构体 
+     * 比如PF_INET对应的定义在net/ipv4/af_inet.c中 */
 	pf = rcu_dereference(net_families[family]);
 	err = -EAFNOSUPPORT;
 	if (!pf)
@@ -1307,6 +1329,8 @@ int __sock_create(struct net *net, int family, int type, int protocol,
 	/* Now protected by module ref count */
 	rcu_read_unlock();
 
+    /* 比如PF_INET对应的create函数就是：inet_create() 
+     * 这里就是针对特定type的BSD socket的初始化了(内存其实已经分配过了) */
 	err = pf->create(net, sock, protocol, kern);
 	if (err < 0)
 		goto out_module_put;
@@ -1347,6 +1371,7 @@ EXPORT_SYMBOL(__sock_create);
 
 int sock_create(int family, int type, int protocol, struct socket **res)
 {
+    /* current表示当前进程，current->nsproxy->net_ns应该表示的是当前进程所在的net namespace */
 	return __sock_create(current->nsproxy->net_ns, family, type, protocol, res, 0);
 }
 EXPORT_SYMBOL(sock_create);
@@ -1357,6 +1382,16 @@ int sock_create_kern(int family, int type, int protocol, struct socket **res)
 }
 EXPORT_SYMBOL(sock_create_kern);
 
+/* 不得吐槽下这种定义方式让cscope找不到很蛋疼 */
+/* sys_socket()系统调用
+ * @family: 表示address family, 可理解为协议族。比如TCP/IP协议的话，就是AF_INET类型
+ * @type: 表示socket类型，比如TCP属于SOCK_STREAM类型；UDP属于SOCK_DGRAM类型
+ * @protocol: 正常情况下，对于给定的协议族，只有单一的协议支持特定的套接字类型。
+ *            这时，只要将protocol参数设置为0即可。内核会自动选择默认的协议 
+ * @return: 返回新建的socket对应的文件描述符FD; 如果返回<0的数，则表示出现错误 
+ *
+ * 举例： s = socket(AF_INET,SOCK_STREAM,0)
+ */
 SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol)
 {
 	int retval;
@@ -1369,6 +1404,7 @@ SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol)
 	BUILD_BUG_ON(SOCK_CLOEXEC & SOCK_TYPE_MASK);
 	BUILD_BUG_ON(SOCK_NONBLOCK & SOCK_TYPE_MASK);
 
+    /* type字段正常用是套接字类型，但上半部分也会用作flags */
 	flags = type & ~SOCK_TYPE_MASK;
 	if (flags & ~(SOCK_CLOEXEC | SOCK_NONBLOCK))
 		return -EINVAL;
@@ -1377,10 +1413,12 @@ SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol)
 	if (SOCK_NONBLOCK != O_NONBLOCK && (flags & SOCK_NONBLOCK))
 		flags = (flags & ~SOCK_NONBLOCK) | O_NONBLOCK;
 
+    /* 创建BSD socket结构体 */
 	retval = sock_create(family, type, protocol, &sock);
 	if (retval < 0)
 		goto out;
 
+    /* 将BSD socket与FD进行一对一绑定，返回值为socket对应的FD */
 	retval = sock_map_fd(sock, flags & (O_CLOEXEC | O_NONBLOCK));
 	if (retval < 0)
 		goto out_release;
@@ -2549,10 +2587,12 @@ SYSCALL_DEFINE2(socketcall, int, call, unsigned long __user *, args)
  *	socket interface. The value ops->family coresponds to the
  *	socket system call protocol family.
  */
+/* 注册一种BSD socket类型 */
 int sock_register(const struct net_proto_family *ops)
 {
 	int err;
 
+    /* 内核支持的family是有限的 */
 	if (ops->family >= NPROTO) {
 		printk(KERN_CRIT "protocol %d >= NPROTO(%d)\n", ops->family,
 		       NPROTO);
@@ -2564,6 +2604,7 @@ int sock_register(const struct net_proto_family *ops)
 				      lockdep_is_held(&net_family_lock)))
 		err = -EEXIST;
 	else {
+        /* 注册指定family的socket类型，本质就是将net_familyies数组对应的一项进行初始化 */
 		rcu_assign_pointer(net_families[ops->family], ops);
 		err = 0;
 	}
