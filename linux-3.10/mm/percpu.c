@@ -97,6 +97,7 @@
 #define __pcpu_ptr_to_addr(ptr)		(void __force *)(ptr)
 #endif	/* CONFIG_SMP */
 
+/* 该结构体用于管理percpu的内存 */
 struct pcpu_chunk {
 	struct list_head	list;		/* linked to pcpu_slot lists */
 	int			free_size;	/* free bytes in the chunk */
@@ -1857,6 +1858,7 @@ static void __init pcpu_dfl_fc_free(void *ptr, size_t size)
 	free_bootmem(__pa(ptr), size);
 }
 
+/* 用于为每个cpu的percpu变量副本分配空间 */
 void __init setup_per_cpu_areas(void)
 {
 	unsigned long delta;
@@ -1867,13 +1869,46 @@ void __init setup_per_cpu_areas(void)
 	 * Always reserve area for module percpu variables.  That's
 	 * what the legacy allocator did.
 	 */
+    /* 为percpu建立第一个chunk */
 	rc = pcpu_embed_first_chunk(PERCPU_MODULE_RESERVE,
 				    PERCPU_DYNAMIC_RESERVE, PAGE_SIZE, NULL,
 				    pcpu_dfl_fc_alloc, pcpu_dfl_fc_free);
 	if (rc < 0)
 		panic("Failed to initialize percpu areas.");
 
+    /* 内核为percpu分配了一大段空间，在整个percpu空间中根据cpu个数将percpu空间分成不同的unit
+     * pcpu_base_addr就是整个系统的percpu的起始内存地址，
+     * __per_cpu_start表示静态分配的percpu起始地址，即".data.percpu"中起始地址
+     */
 	delta = (unsigned long)pcpu_base_addr - (unsigned long)__per_cpu_start;
+    /* 遍历系统中的cpu，设置每个cpu的__per_cpu_offset指针
+     * pcpu_unit_offsets保存的是某个cpu对应的unit空间与pcpu_base_addr的偏移量
+     * 加上delta，就得到了每个cpu的percpu变量副本空间相对于__per_cpu_start的偏移量
+     * 结构图如下：
+     * 
+     *          + ======================== +    <== 内核镜像起始地址
+     *          |                          |
+     *          | ------------------------ | <-- __per_cpu_start
+     *          | |    .date.percpu段    | |      
+     *          | ------------------------ | <-- __per_cpu_end
+     *          |                          |
+     *          + ======================== +    <== 内核镜像结束地址
+     *          |                          |
+     *  ======> | ======================== | <-- pcpu_base_addr
+     *          | |  static percpu area  | |      
+     *   cpu0   | ------------------------ |    
+     *   percpu | |    reserved area     | |      
+     *  副本空间| ------------------------ |    
+     *          | |     dynamic area     | |      
+     *  ======> | ======================== |
+     *          | |  static percpu area  | |      
+     *   cpu1   | ------------------------ |    
+     *   percpu | |    reserved area     | |      
+     *  副本空间| ------------------------ |    
+     *          | |     dynamic area     | |      
+     *  ======> | ======================== |
+     *          |                          |
+     */
 	for_each_possible_cpu(cpu)
 		__per_cpu_offset[cpu] = delta + pcpu_unit_offsets[cpu];
 }

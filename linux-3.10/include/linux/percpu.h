@@ -83,20 +83,25 @@
 extern void *pcpu_base_addr;
 extern const unsigned long *pcpu_unit_offsets;
 
+/* 记录处理器的分组信息 */
 struct pcpu_group_info {
+    /* 该组处理器数目 */
 	int			nr_units;	/* aligned # of units */
 	unsigned long		base_offset;	/* base address offset */
+    /* 组内cpu对应数组，保存cpu id号 */
 	unsigned int		*cpu_map;	/* unit->cpu map, empty
 						 * entries contain NR_CPUS */
 };
 
+/* 整个percpu内存管理信息被手机在该结构体中 */
 struct pcpu_alloc_info {
-	size_t			static_size;
+	size_t			static_size;    /* 静态分配的percpu变量占用的内存大小 */
 	size_t			reserved_size;
-	size_t			dyn_size;
+	size_t			dyn_size;       /* 动态分配的percpu变量占用的内存大小 */
 	size_t			unit_size;
 	size_t			atom_size;
 	size_t			alloc_size;
+    /* 整个pcpu_alloc_info结构体的大小, 看最后一个变量就知道这是是动态结构体了 */
 	size_t			__ai_size;	/* internal, don't use */
 	int			nr_groups;	/* 0 if grouping unnecessary */
 	struct pcpu_group_info	groups[];

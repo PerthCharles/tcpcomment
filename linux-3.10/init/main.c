@@ -503,7 +503,7 @@ asmlinkage void __init start_kernel(void)
 	mm_init_cpumask(&init_mm);
 	setup_command_line(command_line);
 	setup_nr_cpu_ids();
-	setup_per_cpu_areas();
+	setup_per_cpu_areas();  /* 启动内核是，为每个cpu的percpu变量副本分配空间 */
 	smp_prepare_boot_cpu();	/* arch-specific boot-cpu hooks */
 
 	build_all_zonelists(NULL, NULL);
