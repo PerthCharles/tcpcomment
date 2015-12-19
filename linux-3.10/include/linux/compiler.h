@@ -16,6 +16,10 @@
 # define __acquire(x)	__context__(x,1)
 # define __release(x)	__context__(x,-1)
 # define __cond_lock(x,c)	((c) ? ({ __acquire(x); 1; }) : 0)
+/* __percpu 其实只是一个标记，noderef表示这个指针不应该被'解引用'
+ * 同时指针的地址空间编号为3，不能cast成不同地址空间编号的指针 
+ * 说白了，就是一个给compiler的notation而已，便于进行语法检查罢了 */
+/* 具体的相关信息可以看看Sparse的wiki：https://en.wikipedia.org/wiki/Sparse */
 # define __percpu	__attribute__((noderef, address_space(3)))
 #ifdef CONFIG_SPARSE_RCU_POINTER
 # define __rcu		__attribute__((noderef, address_space(4)))
