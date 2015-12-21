@@ -445,14 +445,17 @@ struct socket *sockfd_lookup(int fd, int *err)
 }
 EXPORT_SYMBOL(sockfd_lookup);
 
+/* 根据文件描述符FD，找到对应的BSD socket */
 static struct socket *sockfd_lookup_light(int fd, int *err, int *fput_needed)
 {
 	struct file *file;
 	struct socket *sock;
 
 	*err = -EBADF;
+    /* 根据文件描述符FD，找到对应的file结构体 */
 	file = fget_light(fd, fput_needed);
 	if (file) {
+        /* 根据file获取BSD socket */
 		sock = sock_from_file(file, err);
 		if (sock)
 			return sock;
@@ -1936,7 +1939,7 @@ out_put:
  *	Get a socket option. Because we don't know the option lengths we have
  *	to pass a user mode parameter for the protocols to sort out.
  */
-
+/* 获取BSD socket选项配置 */
 SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
 		char __user *, optval, int __user *, optlen)
 {
@@ -1949,6 +1952,7 @@ SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
 		if (err)
 			goto out_put;
 
+        /* 如果是需要获取socket层的信息 */
 		if (level == SOL_SOCKET)
 			err =
 			    sock_getsockopt(sock, level, optname, optval,
