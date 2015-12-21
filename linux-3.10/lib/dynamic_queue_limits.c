@@ -14,6 +14,7 @@
 #define AFTER_EQ(A, B) ((int)((A) - (B)) >= 0)
 
 /* Records completed count and recalculates the queue limit */
+/* TODO: sent与completed的区别？ */
 void dql_completed(struct dql *dql, unsigned int count)
 {
 	unsigned int inprogress, prev_inprogress, limit;
@@ -49,6 +50,11 @@ void dql_completed(struct dql *dql, unsigned int count)
 		 *     of bytes both sent and completed in the last interval,
 		 *     plus any previous over-limit.
 		 */
+        /* 如果limit在上一个周期达到过，并且queue中已经没有数据了，说明queue limit比较小，需要增大
+         * 增大多少：
+         *      a. 增加在上一个周期sent和completed的数量 
+         *      b. 增加上一个周期over limit的部分 (由于limit不够大，才会over的)
+         */
 		limit += POSDIFF(completed, dql->prev_num_queued) +
 		     dql->prev_ovlimit;
 		dql->slack_start_time = jiffies;
@@ -78,6 +84,8 @@ void dql_completed(struct dql *dql, unsigned int count)
 		 *     "round down" by non-overlimit portion of the last
 		 *     queueing operation.
 		 */
+        /* 如果上一个周期limit保证了数据一直有数据发送，并且limit也没有被达到过，那么就可以考虑降低limit
+         * 降多少？*/
 		slack = POSDIFF(limit + dql->prev_ovlimit,
 		    2 * (completed - dql->num_completed));
 		slack_last_objs = dql->prev_ovlimit ?
@@ -88,6 +96,10 @@ void dql_completed(struct dql *dql, unsigned int count)
 		if (slack < dql->lowest_slack)
 			dql->lowest_slack = slack;
 
+        /* 只有超过hold_time后，才会选择降低limit */
+        /* slack_start_time记录的是limit上一次"变化"的时刻，至少得让它生效一段时间吧 */
+        /* 很奇怪的一个问题：为什么time_after在这里？ 不应该放到进这个if-else分支的地方吗？要不然计算了半天又不用
+         * 看着好像是要统计一个周期内的最小的slack值，才这么做的，好吧 */
 		if (time_after(jiffies,
 			       dql->slack_start_time + dql->slack_hold_time)) {
 			limit = POSDIFF(limit, dql->lowest_slack);
@@ -112,6 +124,7 @@ void dql_completed(struct dql *dql, unsigned int count)
 }
 EXPORT_SYMBOL(dql_completed);
 
+/* 重置DQL：清零计数器 */
 void dql_reset(struct dql *dql)
 {
 	/* Reset all dynamic values */
@@ -127,6 +140,7 @@ void dql_reset(struct dql *dql)
 }
 EXPORT_SYMBOL(dql_reset);
 
+/* 初始化DQL queue  */
 int dql_init(struct dql *dql, unsigned hold_time)
 {
 	dql->max_limit = DQL_MAX_LIMIT;

@@ -543,6 +543,7 @@ struct netdev_queue {
 	unsigned long		state;
 
 #ifdef CONFIG_BQL
+    /* 用于 BQL 机制的 DQL */
 	struct dql		dql;
 #endif
 } ____cacheline_aligned_in_smp;
@@ -1953,6 +1954,7 @@ static inline bool netif_queue_stopped(const struct net_device *dev)
 	return netif_tx_queue_stopped(netdev_get_tx_queue(dev, 0));
 }
 
+/* 一个具体的例子就是BQL的limit被达到后会设置__QUEUE_STATE_STACK_XOFF */
 static inline bool netif_xmit_stopped(const struct netdev_queue *dev_queue)
 {
 	return dev_queue->state & QUEUE_STATE_ANY_XOFF;
@@ -1972,6 +1974,7 @@ static inline void netdev_tx_sent_queue(struct netdev_queue *dev_queue,
 	if (likely(dql_avail(&dev_queue->dql) >= 0))
 		return;
 
+    /* 如果BQL队列被用光了，则打上响应的标记 */
 	set_bit(__QUEUE_STATE_STACK_XOFF, &dev_queue->state);
 
 	/*
@@ -2011,6 +2014,8 @@ static inline void netdev_tx_completed_queue(struct netdev_queue *dev_queue,
 	if (dql_avail(&dev_queue->dql) < 0)
 		return;
 
+    /* 如果发送完新的数据包后，queue腾出空间了，
+     * 而之前由于达到limit设置了标记，则继续调度网卡进行数据传输 */
 	if (test_and_clear_bit(__QUEUE_STATE_STACK_XOFF, &dev_queue->state))
 		netif_schedule_queue(dev_queue);
 #endif

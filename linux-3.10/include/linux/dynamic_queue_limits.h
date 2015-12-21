@@ -15,6 +15,8 @@
  *      so queuing new data is blocked.
  *   4) Minimizing the amount of queued data is desirable.
  *
+ * DQL机制的目的就是为了计算一个够用的、最小的queue len。
+ * 即保证吞吐率不受影响，又能避免过长的排队时间
  * The goal of dql is to calculate the limit as the minimum number of objects
  * needed to prevent starvation.
  *
@@ -37,6 +39,7 @@
 
 #ifdef __KERNEL__
 
+/* Dynamic Queue Limits (DQL)结构体，从feature上也称之为Byte Queue Limits(BQL) */
 struct dql {
 	/* Fields accessed in enqueue path (dql_queued) */
 	unsigned int	num_queued;		/* Total ever queued */
@@ -69,6 +72,7 @@ struct dql {
  * Record number of objects queued. Assumes that caller has already checked
  * availability in the queue with dql_avail.
  */
+/* 添加数据后，增加DQL中已经排队的长度计数 */
 static inline void dql_queued(struct dql *dql, unsigned int count)
 {
 	BUG_ON(count > DQL_MAX_OBJECT);
@@ -78,6 +82,7 @@ static inline void dql_queued(struct dql *dql, unsigned int count)
 }
 
 /* Returns how many objects can be queued, < 0 indicates over limit. */
+/* 判断DQL是否已经用完 */
 static inline int dql_avail(const struct dql *dql)
 {
 	return dql->adj_limit - dql->num_queued;

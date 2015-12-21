@@ -1227,6 +1227,7 @@ static bool e1000_clean_tx_irq(struct e1000_ring *tx_ring)
 
 	tx_ring->next_to_clean = i;
 
+    /* 发送完一个数据包后，通知BQL机制更新状态 */
 	netdev_completed_queue(netdev, pkts_compl, bytes_compl);
 
 #define TX_WAKE_THRESHOLD 32
@@ -5551,6 +5552,7 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 			skb_tx_timestamp(skb);
 		}
 
+        /* 通知BQL机制，发送了len长度的数据 */
 		netdev_sent_queue(netdev, skb->len);
 		e1000_tx_queue(tx_ring, tx_flags, count);
 		/* Make sure there is space in the ring for the next send. */
