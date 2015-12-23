@@ -25,6 +25,7 @@
 extern u32 reciprocal_value(u32 B);
 
 
+/* 计算A/(sqrt(B)), 其中R= 1/(sqrt(B)) */
 static inline u32 reciprocal_divide(u32 A, u32 R)
 {
 	return (u32)(((u64)A * R) >> 32);

@@ -41,6 +41,11 @@
  *
  */
 
+/* 这个CoDel queue目前并不是直接嵌入到了linux中，而是一种tc queue策略：
+ * Usage: tc qdisc ... codel [limit PACKETS] [target TIME]
+ *                           [interval TIME] [ecn]
+ */
+
 #include <linux/types.h>
 #include <linux/ktime.h>
 #include <linux/skbuff.h>
@@ -65,6 +70,7 @@ typedef s32 codel_tdiff_t;
 #define CODEL_SHIFT 10
 #define MS2TIME(a) ((a * NSEC_PER_MSEC) >> CODEL_SHIFT)
 
+/* codel 的单位是1024 nsec */
 static inline codel_time_t codel_get_time(void)
 {
 	u64 ns = ktime_to_ns(ktime_get());
@@ -82,17 +88,20 @@ struct codel_skb_cb {
 	codel_time_t enqueue_time;
 };
 
+/* skb->cb里面存着qdisc_skb_cb结构体，qdisc_skb_cb->data存着codel_skb_cb结构体 */
 static struct codel_skb_cb *get_codel_cb(const struct sk_buff *skb)
 {
 	qdisc_cb_private_validate(skb, sizeof(struct codel_skb_cb));
 	return (struct codel_skb_cb *)qdisc_skb_cb(skb)->data;
 }
 
+/* 获取该skb进入队列的时间 */
 static codel_time_t codel_get_enqueue_time(const struct sk_buff *skb)
 {
 	return get_codel_cb(skb)->enqueue_time;
 }
 
+/* 设置skb进入队列的时间 */
 static void codel_set_enqueue_time(struct sk_buff *skb)
 {
 	get_codel_cb(skb)->enqueue_time = codel_get_time();
@@ -106,6 +115,10 @@ static inline u32 codel_time_to_us(codel_time_t val)
 	return (u32)valns;
 }
 
+/* As we don't have infinite memory, we still can drop packets in enqueue()
+ * in case of massive load, but mean of CoDel is to drop packets in
+ * dequeue(), using a control law based on two simple parameters.
+ *              -- quoted from patch: https://patchwork.ozlabs.org/patch/158356/ */
 /**
  * struct codel_params - contains codel parameters
  * @target:	target queue size (in time units)
@@ -113,8 +126,8 @@ static inline u32 codel_time_to_us(codel_time_t val)
  * @ecn:	is Explicit Congestion Notification enabled
  */
 struct codel_params {
-	codel_time_t	target;
-	codel_time_t	interval;
+	codel_time_t	target;         /* 根据patch描述，default 5ms */
+	codel_time_t	interval;       /* 根据patch描述，default 100ms */
 	bool		ecn;
 };
 
@@ -134,10 +147,10 @@ struct codel_vars {
 	u32		count;
 	u32		lastcount;
 	bool		dropping;
-	u16		rec_inv_sqrt;
+	u16		rec_inv_sqrt;   /* 即：1/(sqrt(count)) */
 	codel_time_t	first_above_time;
 	codel_time_t	drop_next;
-	codel_time_t	ldelay;
+	codel_time_t	ldelay; /* 上一个出队列的包经历的排队时间 */
 };
 
 #define REC_INV_SQRT_BITS (8 * sizeof(u16)) /* or sizeof_in_bits(rec_inv_sqrt) */
@@ -156,10 +169,11 @@ struct codel_stats {
 	u32		ecn_mark;
 };
 
+/* codel queue初始化 */
 static void codel_params_init(struct codel_params *params)
 {
-	params->interval = MS2TIME(100);
-	params->target = MS2TIME(5);
+	params->interval = MS2TIME(100);    /* 100 ms */
+	params->target = MS2TIME(5);        /* 5 ms */
 	params->ecn = false;
 }
 
@@ -170,7 +184,7 @@ static void codel_vars_init(struct codel_vars *vars)
 
 static void codel_stats_init(struct codel_stats *stats)
 {
-	stats->maxpacket = 256;
+	stats->maxpacket = 256;     /* 直接将maxpacket设置为256 */
 }
 
 /*
@@ -179,6 +193,7 @@ static void codel_stats_init(struct codel_stats *stats)
  *
  * Here, invsqrt is a fixed point number (< 1.0), 32bit mantissa, aka Q0.32
  */
+/* 计算square root的方法，具体看一下wiki */
 static void codel_Newton_step(struct codel_vars *vars)
 {
 	u32 invsqrt = ((u32)vars->rec_inv_sqrt) << REC_INV_SQRT_SHIFT;
@@ -196,6 +211,8 @@ static void codel_Newton_step(struct codel_vars *vars)
  * We maintain in rec_inv_sqrt the reciprocal value of sqrt(count) to avoid
  * both sqrt() and divide operation.
  */
+/* count表示drop的数量，越多则说明已经出现比较严重的拥塞了，
+ * 所以应该缩短 codel_control_law的时间, 即drop_next的时间 */
 static codel_time_t codel_control_law(codel_time_t t,
 				      codel_time_t interval,
 				      u32 rec_inv_sqrt)
@@ -204,6 +221,7 @@ static codel_time_t codel_control_law(codel_time_t t,
 }
 
 
+/* 在dequeue的时候判断是否需要drop该skb */
 static bool codel_should_drop(const struct sk_buff *skb,
 			      struct Qdisc *sch,
 			      struct codel_vars *vars,
@@ -218,12 +236,17 @@ static bool codel_should_drop(const struct sk_buff *skb,
 		return false;
 	}
 
+    /* 计算排队时延 */
 	vars->ldelay = now - codel_get_enqueue_time(skb);
+    /* 更新计数器 */
 	sch->qstats.backlog -= qdisc_pkt_len(skb);
 
 	if (unlikely(qdisc_pkt_len(skb) > stats->maxpacket))
 		stats->maxpacket = qdisc_pkt_len(skb);
 
+    /* 当排队延迟小于目标值，
+     * 或者排队长度小于maxpacket，
+     * 则认为不需要drop 数据包, 直接返回false */
 	if (codel_time_before(vars->ldelay, params->target) ||
 	    sch->qstats.backlog <= stats->maxpacket) {
 		/* went below - stay below for at least interval */
@@ -235,8 +258,10 @@ static bool codel_should_drop(const struct sk_buff *skb,
 		/* just went above from below. If we stay above
 		 * for at least interval we'll say it's ok to drop
 		 */
+        /* 等于0表示刚刚进入above状态, 还不着急立马就drop */
 		vars->first_above_time = now + params->interval;
 	} else if (codel_time_after(now, vars->first_above_time)) {
+        /* 如果再次进入above状态，则返回true进行丢包  */
 		ok_to_drop = true;
 	}
 	return ok_to_drop;
@@ -260,12 +285,17 @@ static struct sk_buff *codel_dequeue(struct Qdisc *sch,
 		return skb;
 	}
 	now = codel_get_time();
+    /* dequeue时判断是否需要drop */
 	drop = codel_should_drop(skb, sch, vars, params, stats, now);
+    /* 如果已经在dropping状态 */
 	if (vars->dropping) {
 		if (!drop) {
+            /* 排队延迟降下去了，离开dropping状态 */
 			/* sojourn time below target - leave dropping state */
 			vars->dropping = false;
 		} else if (codel_time_after_eq(now, vars->drop_next)) {
+            /* drop_next是根据codel_control_law计算得到的，
+             * 如果已经到了要接着drop的时间，则drop当前包，dequeue下一个  */
 			/* It's time for the next drop. Drop the current
 			 * packet and dequeue the next. The dequeue might
 			 * take us out of dropping state.
@@ -280,6 +310,9 @@ static struct sk_buff *codel_dequeue(struct Qdisc *sch,
 						* since there is no more divide
 						*/
 				codel_Newton_step(vars);
+                /* 如果设置了ECN标记，则只打上ECN标记，而不真的drop包
+                 * 但是既然drop会drop多个，ECN标记为什么不打上多个呢？
+                 * DCTCP好像就是根据ECN的数量来感知拥塞程度的吧, 可惜了 */
 				if (params->ecn && INET_ECN_set_ce(skb)) {
 					stats->ecn_mark++;
 					vars->drop_next =
@@ -290,6 +323,7 @@ static struct sk_buff *codel_dequeue(struct Qdisc *sch,
 				}
 				qdisc_drop(skb, sch);
 				stats->drop_count++;
+                /* dequeue下一个数据包, 如果它的排队时间也超时了，就会触发连续drop，所以这里是while循环 */
 				skb = dequeue_func(vars, sch);
 				if (!codel_should_drop(skb, sch,
 						       vars, params, stats, now)) {
@@ -305,6 +339,7 @@ static struct sk_buff *codel_dequeue(struct Qdisc *sch,
 			}
 		}
 	} else if (drop) {
+        /* 如果不在dropping状态，说明这是第一开始drop的包 */
 		u32 delta;
 
 		if (params->ecn && INET_ECN_set_ce(skb)) {

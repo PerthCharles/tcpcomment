@@ -77,6 +77,7 @@ static struct sk_buff *codel_qdisc_dequeue(struct Qdisc *sch)
 	struct codel_sched_data *q = qdisc_priv(sch);
 	struct sk_buff *skb;
 
+    /* 将dequeue函数指针传给codel_dequeue() */
 	skb = codel_dequeue(sch, &q->params, &q->vars, &q->stats, dequeue);
 
 	/* We cant call qdisc_tree_decrease_qlen() if our qlen is 0,

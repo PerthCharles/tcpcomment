@@ -432,6 +432,7 @@ static inline bool qdisc_tx_is_noop(const struct net_device *dev)
 	return true;
 }
 
+/* 返回qdisc queue排队长度 */
 static inline unsigned int qdisc_pkt_len(const struct sk_buff *skb)
 {
 	return qdisc_skb_cb(skb)->pkt_len;
@@ -623,6 +624,7 @@ static inline unsigned int qdisc_queue_drop(struct Qdisc *sch)
 	return __qdisc_queue_drop(sch, &sch->q);
 }
 
+/* qdisc机制丢弃一个数据包 */
 static inline int qdisc_drop(struct sk_buff *skb, struct Qdisc *sch)
 {
 	kfree_skb(skb);
