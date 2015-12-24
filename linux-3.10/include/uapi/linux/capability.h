@@ -185,6 +185,7 @@ struct vfs_cap_data {
 /* Allow read/write of device-specific registers */
 /* Allow activation of ATM control sockets */
 
+/* TODO: 这是什么含义 */
 #define CAP_NET_ADMIN        12
 
 /* Allow use of RAW sockets */

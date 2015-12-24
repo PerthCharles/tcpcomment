@@ -922,6 +922,7 @@ void cred_to_ucred(struct pid *pid, const struct cred *cred,
 }
 EXPORT_SYMBOL_GPL(cred_to_ucred);
 
+/* 获取内核struct sock对应的选项 */
 int sock_getsockopt(struct socket *sock, int level, int optname,
 		    char __user *optval, int __user *optlen)
 {
@@ -936,6 +937,8 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 	int lv = sizeof(int);
 	int len;
 
+    /* 想了解这些选项的具体含义，可以多读读man socket(7) */
+    /* 将用户态的optlen赋值给内核态的len变量 */
 	if (get_user(len, optlen))
 		return -EFAULT;
 	if (len < 0)
@@ -944,68 +947,97 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 	memset(&v, 0, sizeof(v));
 
 	switch (optname) {
+    /* 查看是否设置了debug信息输出, 默认关闭 */
 	case SO_DEBUG:
 		v.val = sock_flag(sk, SOCK_DBG);
 		break;
 
+    /* 查看是否设置了不经过gateway路由，而仅与直接相连的host进行通信, 默认关闭 */
 	case SO_DONTROUTE:
 		v.val = sock_flag(sk, SOCK_LOCALROUTE);
 		break;
 
+    /* 查看是否设置了广播特性，默认关闭 */
 	case SO_BROADCAST:
 		v.val = sock_flag(sk, SOCK_BROADCAST);
 		break;
 
+    /* 查看内核中发送缓存的大小， 默认值与sysctl_tcp_wmem有关 */
 	case SO_SNDBUF:
 		v.val = sk->sk_sndbuf;
 		break;
 
+    /* 查看内核中接收缓存的大小，默认值与sysctl_tcp_rmem有关 */
 	case SO_RCVBUF:
 		v.val = sk->sk_rcvbuf;
 		break;
 
+    /* 查看是否设置了重用本地地址，默认关闭 
+     * 对于AF_INET的效果就是：如果存在使用相同地址的socket存在，
+     * 只要它不是listening状态，依然允许bind()成功。
+     * 一个比较具体的例子：
+     * server段主动断开一条TCP流后，将进入TIME_WAIT状态，
+     * 此时立即重启server将导致bind失败。如果设置了reuse选项的话则能够bind成功 */
 	case SO_REUSEADDR:
 		v.val = sk->sk_reuse;
 		break;
 
+    /* 查看是否允许多个多个socket绑定到同一个本地地址，默认关闭
+     * 举例：
+     * 当设置该标志，之后就可以用多线程技术开启多个socket，进而有多个listener去监听新建连的数据
+     * 最终accept也有多个实例，相比只有一个accept实例会有更好的性能 */
 	case SO_REUSEPORT:
 		v.val = sk->sk_reuseport;
 		break;
 
+    /* 查看是否开启了keepalive timer 
+     * 是的，现在TCP提供了keepalive timer !!! */
 	case SO_KEEPALIVE:
 		v.val = sock_flag(sk, SOCK_KEEPOPEN);
 		break;
 
+    /* 查看socket的type(如SOCK_STREAM=1)，返回值为整数 */
 	case SO_TYPE:
 		v.val = sk->sk_type;
 		break;
 
+    /* 查看socket的protocol, 如IPPROTO_TCP = 6 */
 	case SO_PROTOCOL:
 		v.val = sk->sk_protocol;
 		break;
 
+    /* 查看socket的family */
 	case SO_DOMAIN:
 		v.val = sk->sk_family;
 		break;
 
+    /* 返回并清除socket上的error */
 	case SO_ERROR:
 		v.val = -sock_error(sk);
 		if (v.val == 0)
 			v.val = xchg(&sk->sk_err_soft, 0);
 		break;
 
+    /* 查看是否设置Out-Of-Band数据能够直接插入到receive data stream
+     * 默认关闭，此时只有当接收数据时指定了MSG_OOB选项才会直接接收OOB数据 */
 	case SO_OOBINLINE:
 		v.val = sock_flag(sk, SOCK_URGINLINE);
 		break;
 
+    /* 查看是否设置了忽视checksum，默认关闭。
+     * NOTE： 这太丧心病狂了吧。。。 */
 	case SO_NO_CHECK:
 		v.val = sk->sk_no_check;
 		break;
 
+    /* 查看该socket数据包的优先级，比如有一些queue discipline就会根据优先级进行处理 */
 	case SO_PRIORITY:
 		v.val = sk->sk_priority;
 		break;
 
+    /* linger：逗留
+     * 查看linger相关配置，如果开启该选项，则调用close()、shutdown()时会等待所有已经
+     * 进入发送队列的数据都发送出去 */
 	case SO_LINGER:
 		lv		= sizeof(v.ling);
 		v.ling.l_onoff	= sock_flag(sk, SOCK_LINGER);
@@ -1016,6 +1048,11 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 		sock_warn_obsolete_bsdism("getsockopt");
 		break;
 
+    /* 查看是否开启了timestamp控制信息, 要与TCP的timestamp选项区分开来 ！
+     * 举例：
+     * 如果开启，则通过
+     *      error = ioctl(ip_socket, SIOCGSTAMP, &value)
+     * 能够返回最近一次传递数据包给user的时间。 */
 	case SO_TIMESTAMP:
 		v.val = sock_flag(sk, SOCK_RCVTSTAMP) &&
 				!sock_flag(sk, SOCK_RCVTSTAMPNS);
@@ -1043,6 +1080,8 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 			v.val |= SOF_TIMESTAMPING_RAW_HARDWARE;
 		break;
 
+    /* 查看设置的接收超时时间， 仅在nonblocking socket上生效
+     * 如设置60s超时，则当调用recv()/read()时，如果超时，则会返回-1，同时设置errno */
 	case SO_RCVTIMEO:
 		lv = sizeof(struct timeval);
 		if (sk->sk_rcvtimeo == MAX_SCHEDULE_TIMEOUT) {
@@ -1054,6 +1093,8 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 		}
 		break;
 
+    /* 查看设置的发送超时时间， 仅在nonblocking socket上生效
+     * 如设置60s超时，则当调用send()/write()时，如果超时，则会返回-1，同时设置errno */
 	case SO_SNDTIMEO:
 		lv = sizeof(struct timeval);
 		if (sk->sk_sndtimeo == MAX_SCHEDULE_TIMEOUT) {
@@ -1065,10 +1106,12 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 		}
 		break;
 
+    /* 指定最小应该收到多少字节的数据，才能交给user, 比如recv()需要接受这么多数据时才返回 */
 	case SO_RCVLOWAT:
 		v.val = sk->sk_rcvlowat;
 		break;
 
+    /* 指定最小发送多少字节数据，就返回。 Linux直接返回 1， 其实就是不支持该设置  */
 	case SO_SNDLOWAT:
 		v.val = 1;
 		break;
@@ -1088,10 +1131,12 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 		goto lenout;
 	}
 
+    /* 返回本地socket address, 包括IP和PORT */
 	case SO_PEERNAME:
 	{
 		char address[128];
 
+        /* 对于INET，是inet_getname() */
 		if (sock->ops->getname(sock, (struct sockaddr *)address, &lv, 2))
 			return -ENOTCONN;
 		if (lv < len)
@@ -1104,6 +1149,7 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 	/* Dubious BSD thing... Probably nobody even uses it, but
 	 * the UNIX standard wants it for whatever reason... -DaveM
 	 */
+    /* 返回该socket是否是一个处理TCP_LISTEN状态的socket */
 	case SO_ACCEPTCONN:
 		v.val = sk->sk_state == TCP_LISTEN;
 		break;
@@ -1115,18 +1161,23 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 	case SO_PEERSEC:
 		return security_socket_getpeersec_stream(sock, optval, optlen, len);
 
+    /* 查看该socket发出的数据包带的mark标记 */
 	case SO_MARK:
 		v.val = sk->sk_mark;
 		break;
 
+    /* 如果这是该标记，在收到一个skb数据包时会附带一个值，
+     * 该值表明在上一个SKB和这个SKB之间被socket丢弃数据包个数 */
 	case SO_RXQ_OVFL:
 		v.val = sock_flag(sk, SOCK_RXQ_OVFL);
 		break;
 
+    /* 查看是否设置了获取wifi状态的标记 */
 	case SO_WIFI_STATUS:
 		v.val = sock_flag(sk, SOCK_WIFI_STATUS);
 		break;
 
+    /* 查看设置的peek offset值，该值影响recv时的MSG_PEEK选项 */
 	case SO_PEEK_OFF:
 		if (!sock->ops->set_peek_off)
 			return -EOPNOTSUPP;
@@ -1137,6 +1188,8 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 		v.val = sock_flag(sk, SOCK_NOFCS);
 		break;
 
+    /* 查看socket是否绑定了特定的NIC上面
+     * 如果绑定了，则该socket只会处理来自该NIC的数据包 */
 	case SO_BINDTODEVICE:
 		return sock_getbindtodevice(sk, optval, optlen, len);
 
