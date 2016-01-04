@@ -246,6 +246,7 @@ void load_ugly_table(FILE *fp)
 		} while (p > buf + off + 2);
 	}
 
+    /* 挂载到kern_db链表上去 */
 	while (db) {
 		n = db;
 		db = db->next;
@@ -286,6 +287,7 @@ void load_netstat(void)
 	}
 }
 
+/* 打印kern_db，to_hist如果为1，则 */
 void dump_kern_db(FILE *fp, int to_hist)
 {
 	struct nstat_ent *n, *h;
@@ -311,6 +313,7 @@ void dump_kern_db(FILE *fp, int to_hist)
 	}
 }
 
+/* 将kern_db - hist_db的increment打印出来 */
 void dump_incr_db(FILE *fp)
 {
 	struct nstat_ent *n, *h;
@@ -357,15 +360,15 @@ void update_db(int interval)
 	load_snmp6();
 	load_snmp();
 
-	h = kern_db;
-	kern_db = n;
+	h = kern_db;    /* h指向当前kernel的计数器的最新值 */
+	kern_db = n;    /* kern_db再重新指向之前的kern_db */
 
 	for (n = kern_db; n; n = n->next) {
 		struct nstat_ent *h1;
 		for (h1 = h; h1; h1 = h1->next) {
 			if (strcmp(h1->id, n->id) == 0) {
 				double sample;
-				unsigned long incr = h1->ival - n->ival;
+				unsigned long incr = h1->ival - n->ival;    /* 经过一个interval后，计数器的增长量 */
 				n->val += incr;
 				n->ival = h1->ival;
 				sample = (double)(incr*1000)/interval;
