@@ -157,7 +157,7 @@ void load_good_table(FILE *fp)
 			abort();
 		n->id = strdup(idbuf);  /* 复制一份新的string给链表中的id */
 		n->ival = (unsigned long)val;
-		n->val = val;
+		n->val = val;   /* good table就存到了val中 */
 		n->rate = rate;
 		n->next = db;
 		db = n;
@@ -189,21 +189,26 @@ void load_ugly_table(FILE *fp)
 		int  off;
 		char *p;
 
+        /* 虽然丑，但是也是有固定格式的，':' 之后才是计数器相关内容 */
 		p = strchr(buf, ':');
 		if (!p)
 			abort();
 		*p = 0;
+        /* 使用idbuf存储内容：行首标记字段 + counter的id，即名字 */
 		idbuf[0] = 0;
 		strncat(idbuf, buf, sizeof(idbuf) - 1);
-		off = p - buf;
-		p += 2;
+		off = p - buf;  /* 行首标记字段的长度，如Tcp */
+		p += 2;     /* 将p指向第一个counter id开始的位置 */
 
 		while (*p) {
+            /* next指向下一个计数器id的开始位置 */
 			char *next;
 			if ((next = strchr(p, ' ')) != NULL)
 				*next++ = 0;
 			else if ((next = strchr(p, '\n')) != NULL)
 				*next++ = 0;
+
+            /* 将counter id拼接到idbuf中 */
 			if (off < sizeof(idbuf)) {
 				idbuf[off] = 0;
 				strncat(idbuf, p, sizeof(idbuf) - off - 1);
@@ -218,13 +223,17 @@ void load_ugly_table(FILE *fp)
 			p = next;
 		}
 		n = db;
+        /* 至此，n和db都指向一个未复制的nstat_ent list的表头 */
 		if (fgets(buf, sizeof(buf), fp) == NULL)
 			abort();
+
+        /* 开始解析counter value */
 		do {
 			p = strrchr(buf, ' ');
 			if (!p)
 				abort();
 			*p = 0;
+            /* 读的时候，只用ival存，即最长也就是个unsinged long */
 			if (sscanf(p+1, "%lu", &n->ival) != 1)
 				abort();
 			n->val = n->ival;
@@ -233,6 +242,7 @@ void load_ugly_table(FILE *fp)
 				idbuf[5] = 0;
 			else
 				n = n->next;
+        /* TODO： 这个判断条件是什么意思 ? */
 		} while (p > buf + off + 2);
 	}
 
