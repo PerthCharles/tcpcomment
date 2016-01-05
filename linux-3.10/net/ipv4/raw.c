@@ -877,6 +877,7 @@ static int compat_raw_ioctl(struct sock *sk, unsigned int cmd, unsigned long arg
 }
 #endif
 
+/* TODO： 分析raw类型的socket */
 struct proto raw_prot = {
 	.name		   = "RAW",
 	.owner		   = THIS_MODULE,
@@ -890,7 +891,7 @@ struct proto raw_prot = {
 	.getsockopt	   = raw_getsockopt,
 	.sendmsg	   = raw_sendmsg,
 	.recvmsg	   = raw_recvmsg,
-	.bind		   = raw_bind,
+	.bind		   = raw_bind,      /* raw类型的socket是有自己的bind函数的 */
 	.backlog_rcv	   = raw_rcv_skb,
 	.release_cb	   = ip4_datagram_release_cb,
 	.hash		   = raw_hash_sk,

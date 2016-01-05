@@ -469,8 +469,10 @@ EXPORT_SYMBOL(inet_release);
 int sysctl_ip_nonlocal_bind __read_mostly;
 EXPORT_SYMBOL(sysctl_ip_nonlocal_bind);
 
+/* INET 类型BSD socket的具体bind函数 */
 int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 {
+    /* sockaddr是通用的结构体，对于inet类型，对应的就是sockaddr_int结构体 */
 	struct sockaddr_in *addr = (struct sockaddr_in *)uaddr;
 	struct sock *sk = sock->sk;
 	struct inet_sock *inet = inet_sk(sk);
@@ -480,6 +482,8 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	int err;
 
 	/* If the socket has its own bind function then use it. (RAW) */
+    /* 如果socket有自己的bind函数，则用它具体的bind() */
+    /* TODO: 等研究raw类型的socket再细究 */
 	if (sk->sk_prot->bind) {
 		err = sk->sk_prot->bind(sk, uaddr, addr_len);
 		goto out;
@@ -516,8 +520,10 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	    chk_addr_ret != RTN_BROADCAST)
 		goto out;
 
+    /* 转换为host byte order */
 	snum = ntohs(addr->sin_port);
 	err = -EACCES;
+    /* 如果想绑定0 - 1023之间的端口，必须具有root权限 */
 	if (snum && snum < PROT_SOCK &&
 	    !ns_capable(net->user_ns, CAP_NET_BIND_SERVICE))
 		goto out;
@@ -529,6 +535,7 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	 *      would be illegal to use them (multicast/broadcast) in
 	 *      which case the sending device address is used.
 	 */
+    /* BSD socket API会锁住struct sock */
 	lock_sock(sk);
 
 	/* Check these errors (active socket, double bind). */
@@ -536,11 +543,13 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	if (sk->sk_state != TCP_CLOSE || inet->inet_num)
 		goto out_release_sock;
 
+    /* 初始化src address */
 	inet->inet_rcv_saddr = inet->inet_saddr = addr->sin_addr.s_addr;
 	if (chk_addr_ret == RTN_MULTICAST || chk_addr_ret == RTN_BROADCAST)
 		inet->inet_saddr = 0;  /* Use device */
 
 	/* Make sure we are allowed to bind here. */
+    /* 调用get_port()尝试占用snum; tcp对应的是inet_csk_get_port*/
 	if (sk->sk_prot->get_port(sk, snum)) {
 		inet->inet_saddr = inet->inet_rcv_saddr = 0;
 		err = -EADDRINUSE;
@@ -554,6 +563,7 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	inet->inet_sport = htons(inet->inet_num);
 	inet->inet_daddr = 0;
 	inet->inet_dport = 0;
+    /* 将sk的路由设置为NULL，它是listen的socket嘛，dst当然必须是空了 */
 	sk_dst_reset(sk);
 	err = 0;
 out_release_sock:

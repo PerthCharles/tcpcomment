@@ -180,7 +180,7 @@ static DEFINE_PER_CPU(int, sockets_in_use);
  *	too long an error code of -EINVAL is returned. If the copy gives
  *	invalid addresses -EFAULT is returned. On a success 0 is returned.
  */
-
+/* 将user space的sockaddr结构体复制到内核态 */
 int move_addr_to_kernel(void __user *uaddr, int ulen, struct sockaddr_storage *kaddr)
 {
 	if (ulen < 0 || ulen > sizeof(struct sockaddr_storage))
@@ -1534,13 +1534,16 @@ out:
  *	We move the socket address to kernel space before we call
  *	the protocol layer (having also checked the address is ok).
  */
-
+/* BSD socket layer的常用函数bind()
+ * @fd: 使用socket()创建的BSD socket的返回值
+ * @umyaddr: user space传入的sockaddr结构体， 包括address family和sock data(对于inet就是port和IP地址) */
 SYSCALL_DEFINE3(bind, int, fd, struct sockaddr __user *, umyaddr, int, addrlen)
 {
 	struct socket *sock;
 	struct sockaddr_storage address;
 	int err, fput_needed;
 
+    /* 根据fd，查找对应的BSD socket */
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (sock) {
 		err = move_addr_to_kernel(umyaddr, addrlen, &address);
@@ -1549,6 +1552,7 @@ SYSCALL_DEFINE3(bind, int, fd, struct sockaddr __user *, umyaddr, int, addrlen)
 						   (struct sockaddr *)&address,
 						   addrlen);
 			if (!err)
+                /* 调用proto特定的bind函数，如inet则是inet_bind() */
 				err = sock->ops->bind(sock,
 						      (struct sockaddr *)
 						      &address, addrlen);
