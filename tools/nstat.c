@@ -229,7 +229,7 @@ void load_ugly_table(FILE *fp)
 
         /* 开始解析counter value */
 		do {
-			p = strrchr(buf, ' ');
+			p = strrchr(buf, ' ');  /* 由于db list里面是倒序挂载的counter，所以使用strrchr()查找 */
 			if (!p)
 				abort();
 			*p = 0;
@@ -242,7 +242,7 @@ void load_ugly_table(FILE *fp)
 				idbuf[5] = 0;
 			else
 				n = n->next;
-        /* TODO： 这个判断条件是什么意思 ? */
+        /* p是从最后一个空格开始查找的，当p <= buf + off + 2时，就说明解析完毕 */
 		} while (p > buf + off + 2);
 	}
 
@@ -287,7 +287,7 @@ void load_netstat(void)
 	}
 }
 
-/* 打印kern_db，to_hist如果为1，则 */
+/* 打印kern_db */
 void dump_kern_db(FILE *fp, int to_hist)
 {
 	struct nstat_ent *n, *h;
@@ -297,6 +297,11 @@ void dump_kern_db(FILE *fp, int to_hist)
 		unsigned long long val = n->val;
 		if (!dump_zeros && !val && !n->rate)
 			continue;
+        /* 如果没有设置pattern，则会全部打印
+         * 如果设置了pattern，匹配成功(return 1), 则会打印
+         *                    匹配失败(return 0), 如果设置to_hist，则会打印history值 */
+        /* 在server发送给client时，to_hist为0，则仅考虑pattern理解即可
+         * 在更新history时，to_hist为1。如果设置了pattern，对于没有匹配成功的counter，不会更新counter值！ */
 		if (!match(n->id)) {
 			struct nstat_ent *h1;
 			if (!to_hist)
@@ -313,7 +318,8 @@ void dump_kern_db(FILE *fp, int to_hist)
 	}
 }
 
-/* 将kern_db - hist_db的increment打印出来 */
+/* 将kern_db - hist_db的increment打印出来
+ * 目前仅用于打印到stdout，也就是直接使用nstat命令得到的结果 */
 void dump_incr_db(FILE *fp)
 {
 	struct nstat_ent *n, *h;
@@ -349,6 +355,7 @@ void sigchild(int signo)
 {
 }
 
+/* 更新database, 距离上一次更新的时间为interval */
 void update_db(int interval)
 {
 	struct nstat_ent *n, *h;
@@ -363,15 +370,16 @@ void update_db(int interval)
 	h = kern_db;    /* h指向当前kernel的计数器的最新值 */
 	kern_db = n;    /* kern_db再重新指向之前的kern_db */
 
-	for (n = kern_db; n; n = n->next) {
+	for (n = kern_db; n; n = n->next) { /* n指向上一次的kernel_db list */
 		struct nstat_ent *h1;
-		for (h1 = h; h1; h1 = h1->next) {
+		for (h1 = h; h1; h1 = h1->next) {   /* h指向最新的kernel_db list */
 			if (strcmp(h1->id, n->id) == 0) {
 				double sample;
 				unsigned long incr = h1->ival - n->ival;    /* 经过一个interval后，计数器的增长量 */
-				n->val += incr;
-				n->ival = h1->ival;
-				sample = (double)(incr*1000)/interval;
+				n->val += incr;         /* val能存储的值更大, ival可能存在溢出 */
+				n->ival = h1->ival;     /* 更新kern_db list中的值为最新值 */
+				sample = (double)(incr*1000)/interval;  /* 每秒counter的递增量 */
+                /* TODO： 关键是弄明白这个rate到底是什么含义 ! */
 				if (interval >= scan_interval) {
 					n->rate += W*(sample-n->rate);
 				} else if (interval >= 1000) {
@@ -383,6 +391,7 @@ void update_db(int interval)
 					}
 				}
 
+                /* 在更新完kern_db对应的counter后，释放h指向list的对应counter */
 				while (h != h1) {
 					struct nstat_ent *tmp = h;
 					h = h->next;
@@ -398,6 +407,7 @@ void update_db(int interval)
 	}
 }
 
+/* 求时间差，单位转换为毫秒 */
 #define T_DIFF(a,b) (((a).tv_sec-(b).tv_sec)*1000 + ((a).tv_usec-(b).tv_usec)/1000)
 
 
@@ -414,6 +424,7 @@ void server_loop(int fd)
 	sprintf(info_source, "%d.%lu sampling_interval=%d time_const=%d",
 		getpid(), (unsigned long)random(), scan_interval/1000, time_constant/1000);
 
+    /* 刚进入server loop时，加载一次counter */
 	load_netstat();
 	load_snmp6();
 	load_snmp();
@@ -424,13 +435,16 @@ void server_loop(int fd)
 		struct timeval now;
 		gettimeofday(&now, NULL);
 		tdiff = T_DIFF(now, snaptime);
+        /* 如果时间差大于scan_interval，则更新一个database */
 		if (tdiff >= scan_interval) {
 			update_db(tdiff);
 			snaptime = now;
 			tdiff = 0;
 		}
+        /* 等到数据的写入，即client发送数据到server socket */
 		if (poll(&p, 1, tdiff + scan_interval) > 0
 		    && (p.revents&POLLIN)) {
+            /* 完成链接的建立 */
 			int clnt = accept(fd, NULL, NULL);
 			if (clnt >= 0) {
 				pid_t pid;
@@ -441,6 +455,7 @@ void server_loop(int fd)
 						children++;
 					close(clnt);
 				} else {
+                    /* 在子进程中调用dump_kern_db,将kern_db发送给client */
 					FILE *fp = fdopen(clnt, "w");
 					if (fp) {
 						if (tdiff > 0)
@@ -451,6 +466,7 @@ void server_loop(int fd)
 				}
 			}
 		}
+        /* 如果children成功的结束，则减少children值 */
 		while (children && waitpid(-1, &status, WNOHANG) > 0)
 			children--;
 	}
@@ -506,7 +522,7 @@ int main(int argc, char *argv[])
 			no_output = 1;
 			break;
 		case 'd':
-			scan_interval = 1000*atoi(optarg);
+			scan_interval = 1000*atoi(optarg);  /* 可以看出scan_interval仅接受int型 */
 			break;
 		case 't':
 			if (sscanf(optarg, "%d", &time_constant) != 1 ||
@@ -526,17 +542,22 @@ int main(int argc, char *argv[])
 		}
 	}
 
+    /* 解析完基本参数后，剩下的是pattern, 个人感觉pattern功能没什么用 */
 	argc -= optind;
 	argv += optind;
 
+    /* 进程间通信，使用抽象命名空间 */
 	sun.sun_family = AF_UNIX;
-	sun.sun_path[0] = 0;
+	sun.sun_path[0] = 0;    /* 第一个字节设置为0，是使用抽象命名空间的标记 */
 	sprintf(sun.sun_path+1, "nstat%d", getuid());
 
+    /* 该值大于0，说明是以deamon形式运行nstat. scan_interval单位是毫秒 */
 	if (scan_interval > 0) {
+        /* time_constat是用于计算rate的时间周期，默认为60s */
 		if (time_constant == 0)
 			time_constant = 60;
 		time_constant *= 1000;
+        /* TODO: W是什么用途 ? */
 		W = 1 - 1/exp(log(10)*(double)scan_interval/time_constant);
 		if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
 			perror("nstat: socket");
@@ -554,9 +575,9 @@ int main(int argc, char *argv[])
 			perror("nstat: daemon");
 			exit(-1);
 		}
-		signal(SIGPIPE, SIG_IGN);
-		signal(SIGCHLD, sigchild);
-		server_loop(fd);
+		signal(SIGPIPE, SIG_IGN);   /* 忽略SIGPIPE 信号 */
+		signal(SIGCHLD, sigchild);  /* 使用sigchild空函数处理SIGCHLD信号 */
+		server_loop(fd);    /* 指定server_loop循环，然后退出 */
 		exit(0);
 	}
 
@@ -571,6 +592,7 @@ int main(int argc, char *argv[])
 	if (reset_history)
 		unlink(hist_name);
 
+    /* 将history database存储的数据读入hist_db列表中 */
 	if (!ignore_history || !no_update) {
 		struct stat stb;
 
@@ -596,6 +618,7 @@ int main(int argc, char *argv[])
 			exit(-1);
 		}
 		if (!ignore_history) {
+            /* history文件的合法性检查 */
 			FILE *tfp;
 			long uptime = -1;
 			if ((tfp = fopen("/proc/uptime", "r")) != NULL) {
@@ -615,19 +638,21 @@ int main(int argc, char *argv[])
 		kern_db = NULL;
 	}
 
+    /* 首先尝试以client的身份去连接server */
 	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) >= 0 &&
 	    (connect(fd, (struct sockaddr*)&sun, 2+1+strlen(sun.sun_path+1)) == 0
 	     || (strcpy(sun.sun_path+1, "nstat0"),
 		 connect(fd, (struct sockaddr*)&sun, 2+1+strlen(sun.sun_path+1)) == 0))
 	    && verify_forging(fd) == 0) {
 		FILE *sfp = fdopen(fd, "r");
-		load_good_table(sfp);
+		load_good_table(sfp);   /* 读取server端发过来的数据，载入kern_db中 */
 		if (hist_db && source_mismatch) {
 			fprintf(stderr, "nstat: history is stale, ignoring it.\n");
 			hist_db = NULL;
 		}
 		fclose(sfp);
 	} else {
+        /* 没有server在后台执行的话，就主动的去proc接口中取数据，放到kern_db中 */
 		if (fd >= 0)
 			close(fd);
 		if (hist_db && info_source[0] && strcmp(info_source, "kernel")) {
@@ -644,15 +669,18 @@ int main(int argc, char *argv[])
 	}
 
 	if (!no_output) {
+        /* 如果需要打印counter累计值，或者hist_db为空，则直接将kern_db的数据打印到stdout */
 		if (ignore_history || hist_db == NULL)
 			dump_kern_db(stdout, 0);
+        /* 否则就但因 kern_db与hist_db之间的差值 这也是最常用的功能 */
 		else
 			dump_incr_db(stdout);
 	}
 	if (!no_update) {
+        /* 更新history database */
 		ftruncate(fileno(hist_fp), 0);
 		rewind(hist_fp);
-		dump_kern_db(hist_fp, 1);
+		dump_kern_db(hist_fp, 1);   /* 将kern_db更新到history database中 */
 		fflush(hist_fp);
 	}
 	exit(0);
