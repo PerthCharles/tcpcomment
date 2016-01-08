@@ -13,7 +13,10 @@
  * Set to 1 : This is a 'nulls' end-of-list marker (ptr >> 1)
  * Set to 0 : This is a pointer to some object (ptr)
  */
-
+/* 由于至少是4字节对齐的，所以最低位正常情况下就是0，
+ * 在这个结构中使用最低位来标示是否是 a 'nulls' marker
+ * 如果最低位是1，则说明是end-of-list marker
+ */
 struct hlist_nulls_head {
 	struct hlist_nulls_node *first;
 };

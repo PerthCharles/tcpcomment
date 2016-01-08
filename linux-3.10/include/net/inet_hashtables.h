@@ -40,6 +40,10 @@
  * One chain is dedicated to TIME_WAIT sockets.
  * I'll experiment with dynamic table growth later.
  */
+/* 所有已经确定五元组的tcp流都在这个结构体中可以找到 
+ * 五元组：src ip, dst ip, src port, dst port, bound_if 
+ * 为什么有bound_if，即绑定的网卡？ 因为socket是允许绑定到不同
+ * 网卡的链接共享同一个本地端口 */
 struct inet_ehash_bucket {
 	struct hlist_nulls_head chain;
 	struct hlist_nulls_head twchain;
@@ -48,6 +52,7 @@ struct inet_ehash_bucket {
 /* There are a few simple rules, which allow for local port reuse by
  * an application.  In essence:
  *
+ *  下面这一段是判断一个本地端口是否能被共享(即重复使用)的判断逻辑 ！！！
  *	1) Sockets bound to different interfaces may share a local port.
  *	   Failing that, goto test 2.
  *	2) If all sockets have sk->sk_reuse set, and none of them are in
@@ -76,12 +81,13 @@ struct inet_ehash_bucket {
  * users logged onto your box, isn't it nice to know that new data
  * ports are created in O(1) time?  I thought so. ;-)	-DaveM
  */
+/* 记录使用bind()函数被使用的port的相关信息 */
 struct inet_bind_bucket {
 #ifdef CONFIG_NET_NS
-	struct net		*ib_net;
+	struct net		*ib_net;    /* 表明该bucket属于哪一个net namespace */
 #endif
-	unsigned short		port;
-	signed char		fastreuse;
+	unsigned short		port;       /* 该bucket对应的端口号 */
+	signed char		fastreuse;      /* 这是一个快速判断端口能否被共享的标记位，具体什么条件请看上面一段注释 */
 	signed char		fastreuseport;
 	kuid_t			fastuid;
 	int			num_owners;
@@ -97,6 +103,7 @@ static inline struct net *ib_net(struct inet_bind_bucket *ib)
 #define inet_bind_bucket_for_each(tb, head) \
 	hlist_for_each_entry(tb, head, node)
 
+/* 记住命名规则：bucket放在对应的hashbucket中 */
 struct inet_bind_hashbucket {
 	spinlock_t		lock;
 	struct hlist_head	chain;
@@ -109,6 +116,7 @@ struct inet_bind_hashbucket {
  * reallocated/inserted into established hash table
  */
 #define LISTENING_NULLS_BASE (1U << 29)
+/* TODO: 保存所有处于listen状态的socket ？ */
 struct inet_listen_hashbucket {
 	spinlock_t		lock;
 	struct hlist_nulls_head	head;
@@ -117,6 +125,7 @@ struct inet_listen_hashbucket {
 /* This is for listening sockets, thus all sockets which possess wildcards. */
 #define INET_LHTABLE_SIZE	32	/* Yes, really, this is all you need. */
 
+/* 所有socket相关的hash信息的总结构体 */
 struct inet_hashinfo {
 	/* This is for sockets with full identity only.  Sockets here will
 	 * always be without wildcards and will have the following invariant:
@@ -150,6 +159,7 @@ struct inet_hashinfo {
 	 * table where wildcard'd TCP sockets can exist.  Hash function here
 	 * is just local port number.
 	 */
+    /* 处于listen状态的sockets, 这个hashtable只有32项，也就是由于LISTEN的socket少才这么任性吧。*/
 	struct inet_listen_hashbucket	listening_hash[INET_LHTABLE_SIZE]
 					____cacheline_aligned_in_smp;
 
@@ -170,6 +180,7 @@ static inline spinlock_t *inet_ehash_lockp(
 	return &hashinfo->ehash_locks[hash & hashinfo->ehash_locks_mask];
 }
 
+/* 分配ehash_bucket chain的spinlock */
 static inline int inet_ehash_locks_alloc(struct inet_hashinfo *hashinfo)
 {
 	unsigned int i, size = 256;
@@ -178,6 +189,7 @@ static inline int inet_ehash_locks_alloc(struct inet_hashinfo *hashinfo)
 #else
 	unsigned int nr_pcpus = num_possible_cpus();
 #endif
+    /* size有cpu数量决定，size决定ehash_locks的数量和ehash_bucket的数量 ! */
 	if (nr_pcpus >= 4)
 		size = 512;
 	if (nr_pcpus >= 8)
@@ -226,6 +238,7 @@ extern struct inet_bind_bucket *
 extern void inet_bind_bucket_destroy(struct kmem_cache *cachep,
 				     struct inet_bind_bucket *tb);
 
+/* bind hashbucket嘛，自然最关键的hash因子就是local port 了 */
 static inline int inet_bhashfn(struct net *net,
 		const __u16 lport, const int bhash_size)
 {
@@ -265,6 +278,7 @@ extern struct sock *__inet_lookup_listener(struct net *net,
 					   const unsigned short hnum,
 					   const int dif);
 
+/* to be continued */
 static inline struct sock *inet_lookup_listener(struct net *net,
 		struct inet_hashinfo *hashinfo,
 		__be32 saddr, __be16 sport,
