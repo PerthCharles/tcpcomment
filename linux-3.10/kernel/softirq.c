@@ -125,6 +125,7 @@ static inline void __local_bh_disable(unsigned long ip, unsigned int cnt)
 }
 #endif /* CONFIG_TRACE_IRQFLAGS */
 
+/* 功能：disable softirq and tasklet processing on the local processor */
 void local_bh_disable(void)
 {
 	__local_bh_disable((unsigned long)__builtin_return_address(0),

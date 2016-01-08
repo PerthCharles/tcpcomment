@@ -1424,6 +1424,10 @@ static inline void sk_wmem_free_skb(struct sock *sk, struct sk_buff *skb)
 	__kfree_skb(skb);
 }
 
+/* 当sk->sk_lock被用户程序占用时，
+ * 不管是  硬中断触发的top half handler,
+ * 还是    软中断触发的bottom half handler
+ * 都无法改变socket的状态 */
 /* Used by processes to "lock" a socket state, so that
  * interrupts and bottom half handlers won't change it
  * from under us. It essentially blocks any incoming
