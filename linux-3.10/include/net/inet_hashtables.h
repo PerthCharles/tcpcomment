@@ -278,7 +278,8 @@ extern struct sock *__inet_lookup_listener(struct net *net,
 					   const unsigned short hnum,
 					   const int dif);
 
-/* to be continued */
+/* 根据5元组查找处于listen状态的socket
+ * sip + sport + dip + dport + dif(net device ifindex) */
 static inline struct sock *inet_lookup_listener(struct net *net,
 		struct inet_hashinfo *hashinfo,
 		__be32 saddr, __be16 sport,
@@ -297,6 +298,7 @@ static inline struct sock *inet_lookup_listener(struct net *net,
    On 64bit targets we combine comparisons with pair of adjacent __be32
    fields in the same way.
 */
+/* 拼接两个相邻块，提高比较时的效率 ? */
 #ifdef __BIG_ENDIAN
 #define INET_COMBINED_PORTS(__sport, __dport) \
 	((__force __portpair)(((__force __u32)(__be16)(__sport) << 16) | (__u32)(__dport)))
@@ -368,6 +370,9 @@ static inline struct sock *
 					 ntohs(dport), dif);
 }
 
+/* 查找系统中所用的socket, 先查非listen状态的，再查listen状态的 */
+/* 先查非listen的，再查listen在现有实现下逻辑是没问题的，但是性能是不是稍微差了点呢？
+ * 毕竟established等状态的socket数量可能是非常多的 */
 static inline struct sock *__inet_lookup(struct net *net,
 					 struct inet_hashinfo *hashinfo,
 					 const __be32 saddr, const __be16 sport,
@@ -390,6 +395,7 @@ static inline struct sock *inet_lookup(struct net *net,
 {
 	struct sock *sk;
 
+    /* 查找过程需要disable bottom half中断的，所以必须越快越好! */
 	local_bh_disable();
 	sk = __inet_lookup(net, hashinfo, saddr, sport, daddr, dport, dif);
 	local_bh_enable();
@@ -397,12 +403,15 @@ static inline struct sock *inet_lookup(struct net *net,
 	return sk;
 }
 
+/* 根据skb来查找对应的socket */
 static inline struct sock *__inet_lookup_skb(struct inet_hashinfo *hashinfo,
 					     struct sk_buff *skb,
 					     const __be16 sport,
 					     const __be16 dport)
 {
+    /* 如果skb->sk已经设置过，则直接返回咯 */
 	struct sock *sk = skb_steal_sock(skb);
+    /* 获取skb的ip头 */
 	const struct iphdr *iph = ip_hdr(skb);
 
 	if (sk)
