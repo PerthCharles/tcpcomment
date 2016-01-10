@@ -512,6 +512,17 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	 *  is temporarily down)
 	 */
 	err = -EADDRNOTAVAIL;
+    /* sysctl_ip_nonlocal_bind表示是否允许bind绑定一个非本地的ip地址，如果设置为1，则表示允许！ */
+    /* 如果没有设置sysctl_ip_nonlocal_bind, 那么就不允许绑定非本地ip啦，否则就goto out */
+    /* 属于local的类型：
+     *      INADDR_ANY      = address to accept any incoming message
+     *      RTN_LOCAL       = accept locally
+     *      RTN_MULTICAST   = multicast route
+     *      RTX_BROADCAST   = accept locally as broadcast and send as broadcast
+     *
+     * 属于nonlocal的类型：
+     *      RTX_UNICAST     = IP is a gateway or a direct route
+     */
 	if (!sysctl_ip_nonlocal_bind &&
 	    !(inet->freebind || inet->transparent) &&
 	    addr->sin_addr.s_addr != htonl(INADDR_ANY) &&
@@ -523,7 +534,7 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
     /* 转换为host byte order */
 	snum = ntohs(addr->sin_port);
 	err = -EACCES;
-    /* 如果想绑定0 - 1023之间的端口，必须具有root权限 */
+    /* 如果想绑定0 - 1023之间的端口，应该具有root权限, 或者设置了capable */
 	if (snum && snum < PROT_SOCK &&
 	    !ns_capable(net->user_ns, CAP_NET_BIND_SERVICE))
 		goto out;
@@ -535,7 +546,7 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	 *      would be illegal to use them (multicast/broadcast) in
 	 *      which case the sending device address is used.
 	 */
-    /* BSD socket API会锁住struct sock */
+    /* BSD socket API bind()会锁住struct sock */
 	lock_sock(sk);
 
 	/* Check these errors (active socket, double bind). */
@@ -544,6 +555,10 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 		goto out_release_sock;
 
     /* 初始化src address */
+    /* inet_rcv_saddr适用于进行hash查找的，inet_saddr是用于发送的
+     *
+     * 如果是multicast或者broadcast，
+     * 则inet_saddr被设置为0(which means that the sending device address is used in such cases) */
 	inet->inet_rcv_saddr = inet->inet_saddr = addr->sin_addr.s_addr;
 	if (chk_addr_ret == RTN_MULTICAST || chk_addr_ret == RTN_BROADCAST)
 		inet->inet_saddr = 0;  /* Use device */
@@ -551,8 +566,11 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	/* Make sure we are allowed to bind here. */
     /* 调用get_port()尝试占用snum; tcp对应的是inet_csk_get_port*/
 	if (sk->sk_prot->get_port(sk, snum)) {
+        /* 如果bing端口失败，则将地址重新置零 */
 		inet->inet_saddr = inet->inet_rcv_saddr = 0;
-		err = -EADDRINUSE;
+        /* 返回address is already in use的错误码. 
+         * TODO: 但如果port用完了也是返回这个错误码吗? */
+		err = -EADDRINUSE;      
 		goto out_release_sock;
 	}
 

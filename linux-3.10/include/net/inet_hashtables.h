@@ -81,18 +81,21 @@ struct inet_ehash_bucket {
  * users logged onto your box, isn't it nice to know that new data
  * ports are created in O(1) time?  I thought so. ;-)	-DaveM
  */
-/* 记录使用bind()函数被使用的port的相关信息 */
+/* 记录使用bind()函数被使用的port的相关信息 
+ * a. 都有哪些端口被哪些socket使用了
+ * b. 具体是怎样被使用的
+ * c. 使用具体端口的所有相关socket */
 struct inet_bind_bucket {
 #ifdef CONFIG_NET_NS
 	struct net		*ib_net;    /* 表明该bucket属于哪一个net namespace */
 #endif
-	unsigned short		port;       /* 该bucket对应的端口号 */
+	unsigned short		port;       /* 该bucket对应的端口号。 当一个socket想使用一个未被使用的port时，则创建一个inet_bind_bucket，并放到inet_bind_hashbucket中 */
 	signed char		fastreuse;      /* 这是一个快速判断端口能否被共享的标记位，具体什么条件请看上面一段注释 */
 	signed char		fastreuseport;
 	kuid_t			fastuid;
-	int			num_owners;
+	int			num_owners;         /* 该端口被多少个socket在使用 */
 	struct hlist_node	node;
-	struct hlist_head	owners;
+	struct hlist_head	owners;     /* 使用该port号的所有socket所在列表 */
 };
 
 static inline struct net *ib_net(struct inet_bind_bucket *ib)
@@ -105,8 +108,8 @@ static inline struct net *ib_net(struct inet_bind_bucket *ib)
 
 /* 记住命名规则：bucket放在对应的hashbucket中 */
 struct inet_bind_hashbucket {
-	spinlock_t		lock;
-	struct hlist_head	chain;
+	spinlock_t		lock;           /* 用于保护hash 冲突链的spinlock */
+	struct hlist_head	chain;      /* 对应于一个collision hash chain */
 };
 
 /*
@@ -142,6 +145,7 @@ struct inet_hashinfo {
 	/* Ok, let's try this, I give up, we do need a local binding
 	 * TCP hash as well as the others for fast bind/connect.
 	 */
+    /* 所有已经使用的端口号的信息所在hash 结构体 */
 	struct inet_bind_hashbucket	*bhash;
 
 	unsigned int			bhash_size;
@@ -239,6 +243,7 @@ extern void inet_bind_bucket_destroy(struct kmem_cache *cachep,
 				     struct inet_bind_bucket *tb);
 
 /* bind hashbucket嘛，自然最关键的hash因子就是local port 了 */
+/* 计算用于查看inet_bind_hashbucket结构体的key值 */
 static inline int inet_bhashfn(struct net *net,
 		const __u16 lport, const int bhash_size)
 {

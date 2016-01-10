@@ -32,14 +32,17 @@ EXPORT_SYMBOL(inet_csk_timer_bug_msg);
 /*
  * This struct holds the first and last local port number.
  */
+/* 用于指定TCP和UDP在随机分配本地端口时的区间 */
 struct local_ports sysctl_local_ports __read_mostly = {
 	.lock = __SEQLOCK_UNLOCKED(sysctl_local_ports.lock),
-	.range = { 32768, 61000 },
+    /* 端口会占用2字节，所以理论的最大值应该是65535 */
+	.range = { 32768, 61000 },  
 };
 
 unsigned long *sysctl_local_reserved_ports;
 EXPORT_SYMBOL(sysctl_local_reserved_ports);
 
+/* 返回分配本地端口时，可供分配的区间 */
 void inet_get_local_port_range(int *low, int *high)
 {
 	unsigned int seq;
@@ -53,6 +56,13 @@ void inet_get_local_port_range(int *low, int *high)
 }
 EXPORT_SYMBOL(inet_get_local_port_range);
 
+/* 该函数遍历这个tb->owners list, 判断以下条件是否成立
+ *      sk2 = tb->owners
+ *  a. sk与sk2绑定的网卡不一样，则sk与sk2之间可以共享port的，则继续检查下一个sk2; 否则继续检查条件b
+ *  b. 如果sk和sk2都设置了reuse标记，并且sk2不是listen状态，那么sk与sk2可以共享port，继续检查下一个sk2；
+ *  否则继续判断条件c
+ *  c. 如果sk与sk2具体的rcv_saddr不一样，就说明sk与sk2可以共享port, 继续检查下一个sk2，否则跳出循环，就会导致sk2 != NULL
+ */
 int inet_csk_bind_conflict(const struct sock *sk,
 			   const struct inet_bind_bucket *tb, bool relax)
 {
@@ -69,17 +79,20 @@ int inet_csk_bind_conflict(const struct sock *sk,
 	 */
 
 	sk_for_each_bound(sk2, &tb->owners) {
+        /* 判断条件a */
 		if (sk != sk2 &&
 		    !inet_v6_ipv6only(sk2) &&
 		    (!sk->sk_bound_dev_if ||
 		     !sk2->sk_bound_dev_if ||
 		     sk->sk_bound_dev_if == sk2->sk_bound_dev_if)) {
+            /* 判断条件b */
 			if ((!reuse || !sk2->sk_reuse ||
 			    sk2->sk_state == TCP_LISTEN) &&
 			    (!reuseport || !sk2->sk_reuseport ||
 			    (sk2->sk_state != TCP_TIME_WAIT &&
 			     !uid_eq(uid, sock_i_uid(sk2))))) {
 				const __be32 sk2_rcv_saddr = sk_rcv_saddr(sk2);
+                /* 判断条件c */
 				if (!sk2_rcv_saddr || !sk_rcv_saddr(sk) ||
 				    sk2_rcv_saddr == sk_rcv_saddr(sk))
 					break;
@@ -94,6 +107,7 @@ int inet_csk_bind_conflict(const struct sock *sk,
 			}
 		}
 	}
+    /* 如果sk2等于NULL，则说明全部检查都pass了，可以bind reuse port，从而返回false, 表示不conflict */
 	return sk2 != NULL;
 }
 EXPORT_SYMBOL_GPL(inet_csk_bind_conflict);
@@ -104,6 +118,7 @@ EXPORT_SYMBOL_GPL(inet_csk_bind_conflict);
 /* 分配端口 */
 int inet_csk_get_port(struct sock *sk, unsigned short snum)
 {
+    /* 找到这个sk对应协议使用的hash结构体, tcp对应tcp_hashinfo */
 	struct inet_hashinfo *hashinfo = sk->sk_prot->h.hashinfo;
 	struct inet_bind_hashbucket *head;
 	struct inet_bind_bucket *tb;
@@ -112,30 +127,46 @@ int inet_csk_get_port(struct sock *sk, unsigned short snum)
 	int smallest_size = -1, smallest_rover;
 	kuid_t uid = sock_i_uid(sk);
 
+    /* 获取端口时，可能会改变hashinfo里面的内容(如分配 inet_bind_bucket)，因此需要关bottom half中断 */
 	local_bh_disable();
+    /* 如果snum为0，即没有指定具体需要绑定的端口，则'随机'分配一个没被使用的即可
+     * 当然了，看完实现后就知道这个'随机'其实是很有规律的 */
 	if (!snum) {
 		int remaining, rover, low, high;
 
 again:
+        /* 获取分配端口的区间，默认是[32768, 61000] */
 		inet_get_local_port_range(&low, &high);
-		remaining = (high - low) + 1;
+		remaining = (high - low) + 1;       /* 总共有多少个port可供分配 */
+        /* 返回一个随机值，给最开始的尝试分配的端口 
+         * rover表示漫游，smallest_rover就是说从这个地方开始查找可用的port */
 		smallest_rover = rover = net_random() % remaining + low;
 
 		smallest_size = -1;
 		do {
+            /* 如果是系统预留的端口，则不能用于随机分配 */
 			if (inet_is_reserved_local_port(rover))
 				goto next_nolock;
+            /* 找到rover端口对应的hash冲突链表的表头 */
 			head = &hashinfo->bhash[inet_bhashfn(net, rover,
 					hashinfo->bhash_size)];
+            /* 锁住hash冲突链表 */
 			spin_lock(&head->lock);
 			inet_bind_bucket_for_each(tb, &head->chain)
+                /* 如果找到了Rover端口对应的inet_bind_bucket结构体 */
 				if (net_eq(ib_net(tb), net) && tb->port == rover) {
-					if (((tb->fastreuse > 0 &&
-					      sk->sk_reuse &&
-					      sk->sk_state != TCP_LISTEN) ||
-					     (tb->fastreuseport > 0 &&
-					      sk->sk_reuseport &&
-					      uid_eq(tb->fastuid, uid))) &&
+                    /* a. 如果设置了fastreuse标记，并且当前socket设置了port reuse标记，并且也不是listen状态，则跳到步骤c
+                     *    否则跳到步骤b
+                     * b. 如果设置了fastreuse标记，并且当前socket设置了port reuse标记，并且也不是listen状态，则跳到步骤c
+                     *    否则跳到步骤d
+                     * c. 如果该hash冲突链表是最小的一个，则跳转到步骤e,否则跳转到步骤d 
+                     * d. 这个端口不能被reuse(重用)
+                     * e. 端口能够被重用
+                     * TODO: 以上就是基本的判断逻辑，至于bsockets、bind_conflict()就等后续再理解吧
+                     */
+					if ((   (tb->fastreuse > 0 && sk->sk_reuse && sk->sk_state != TCP_LISTEN) ||
+					        (tb->fastreuseport > 0 && sk->sk_reuseport && uid_eq(tb->fastuid, uid))) 
+                        &&
 					    (tb->num_owners < smallest_size || smallest_size == -1)) {
 						smallest_size = tb->num_owners;
 						smallest_rover = rover;
@@ -151,12 +182,17 @@ again:
 					}
 					goto next;
 				}
-			break;
+            /* break出去，则说明当前准备分配的端口没有被实际的任何socket占用，所以后面会进入tb_not_found逻辑 */
+            /* 要理解这里，其实只要注意到inet_bind_bucket_for_each()循环没有加大括号就懂了 */
+			break;      
 		next:
 			spin_unlock(&head->lock);
 		next_nolock:
+            /* 如果rover超过了high，则重新从low开始尝试。所以其实这个地方理论上能够遍历[low, high]的，
+             * 只不过用个相对随机的rover来适当加速 */
 			if (++rover > high)
 				rover = low;
+        /* 只要还有端口没有尝试，就可以继续尝试分配, 反正bind函数并不十分在意高性能 */
 		} while (--remaining > 0);
 
 		/* Exhausted local port range during search?  It is not
@@ -166,30 +202,42 @@ again:
 		 * the top level, not from the 'break;' statement.
 		 */
 		ret = 1;
+        /* TODO：理解bsocket和bind_conflict()后再来具体解释smallest_size的作用吧 */
 		if (remaining <= 0) {
 			if (smallest_size != -1) {
 				snum = smallest_rover;
 				goto have_snum;
 			}
+            /* 如果找了个遍都没有找到，只好fail，返回1表示绑定port失败 */
 			goto fail;
 		}
 		/* OK, here is the one we will use.  HEAD is
 		 * non-NULL and we hold it's mutex.
 		 */
-		snum = rover;
+		snum = rover;   /* 使用这个找到的端口 */
 	} else {
+        /* 如果指定了端口，则直接'尝试'绑定 */
 have_snum:
+        /* 拿到该端口对应的哈希冲突链表的表头 */
 		head = &hashinfo->bhash[inet_bhashfn(net, snum,
 				hashinfo->bhash_size)];
 		spin_lock(&head->lock);
 		inet_bind_bucket_for_each(tb, &head->chain)
+            /* 如果net namespace和port号一致，则说明该端口已经被某个socket使用着，跳转到found处处理 */
 			if (net_eq(ib_net(tb), net) && tb->port == snum)
 				goto tb_found;
 	}
+    /* 什么情况会执行到这里？
+     * a. 如果是没有指定snum的情况，则只能是上面的do...while()从break中跳出来了  ==> 端口未被使用，tb_not_found
+     * b. 如果是指定了snum的情况，则说明没有找到port对应的bucket  ==> 端口未被使用，tb_not_found
+     */
 	tb = NULL;
+    /* 如果端口之前没有被使用，则inet_bind_bucket就不会被找到，所以要跳转到not_found处处理 */
 	goto tb_not_found;
 tb_found:
+    /* 如果inet_bind_bucket找到了，但是发现还能重用 */
 	if (!hlist_empty(&tb->owners)) {
+        /* 强制reuse */
 		if (sk->sk_reuse == SK_FORCE_REUSE)
 			goto success;
 
@@ -201,6 +249,7 @@ tb_found:
 			goto success;
 		} else {
 			ret = 1;
+            /* bind_conflict()执行具体的绑定动作, 对应tcp来说，是inet_csk_bind_conflict() */
 			if (inet_csk(sk)->icsk_af_ops->bind_conflict(sk, tb, true)) {
 				if (((sk->sk_reuse && sk->sk_state != TCP_LISTEN) ||
 				     (tb->fastreuseport > 0 &&
@@ -216,11 +265,16 @@ tb_found:
 	}
 tb_not_found:
 	ret = 1;
+    /* 进入该路径，tb必须为NULL，不为空则出错返回
+     * 同时创建一个新的inet_bind_bucket必须成功 */
 	if (!tb && (tb = inet_bind_bucket_create(hashinfo->bind_bucket_cachep,
 					net, head, snum)) == NULL)
 		goto fail_unlock;
+    /* 一个刚分配的tb，owners list当让应该是空的啊
+     * TODO： 为什么还有这个if条件在这里  */
 	if (hlist_empty(&tb->owners)) {
 		if (sk->sk_reuse && sk->sk_state != TCP_LISTEN)
+            /* 设置标记，便于后续socket在bind时快速完成能否reuse的判断 */
 			tb->fastreuse = 1;
 		else
 			tb->fastreuse = 0;
@@ -238,6 +292,7 @@ tb_not_found:
 			tb->fastreuseport = 0;
 	}
 success:
+    /* 绑定port成功，将socket与tb的关联建立好 */
 	if (!inet_csk(sk)->icsk_bind_hash)
 		inet_bind_hash(sk, tb, snum);
 	WARN_ON(inet_csk(sk)->icsk_bind_hash != tb);

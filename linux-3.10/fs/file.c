@@ -645,9 +645,11 @@ void do_close_on_exec(struct files_struct *files)
 	spin_unlock(&files->file_lock);
 }
 
+/* 根据FD值，返回对应的file指针 */
 struct file *fget(unsigned int fd)
 {
 	struct file *file;
+    /* 当前进程的打开文件数组 */
 	struct files_struct *files = current->files;
 
 	rcu_read_lock();

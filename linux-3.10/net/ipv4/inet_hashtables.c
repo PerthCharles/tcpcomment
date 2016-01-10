@@ -28,6 +28,7 @@
  * Allocate and initialize a new local port bind bucket.
  * The bindhash mutex for snum's hash chain must be held here.
  */
+/* 分配一个inet_bind_bucket */
 struct inet_bind_bucket *inet_bind_bucket_create(struct kmem_cache *cachep,
 						 struct net *net,
 						 struct inet_bind_hashbucket *head,
@@ -64,9 +65,11 @@ void inet_bind_hash(struct sock *sk, struct inet_bind_bucket *tb,
 {
 	struct inet_hashinfo *hashinfo = sk->sk_prot->h.hashinfo;
 
+    /* TODO: bsockets是表示全局的bind的socket个数吗 ? */
 	atomic_inc(&hashinfo->bsockets);
 
 	inet_sk(sk)->inet_num = snum;
+    /* 将该sk加入tb->owners list 中 */
 	sk_add_bind_node(sk, &tb->owners);
 	tb->num_owners++;
 	inet_csk(sk)->icsk_bind_hash = tb;

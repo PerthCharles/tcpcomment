@@ -2973,7 +2973,7 @@ struct proto tcp_prot = {
 	.backlog_rcv		= tcp_v4_do_rcv,
 	.release_cb		= tcp_release_cb,
 	.mtu_reduced		= tcp_v4_mtu_reduced,
-	.hash			= inet_hash,
+	.hash			= inet_hash,    
 	.unhash			= inet_unhash,
 	.get_port		= inet_csk_get_port,
 	.enter_memory_pressure	= tcp_enter_memory_pressure,
@@ -2988,7 +2988,7 @@ struct proto tcp_prot = {
 	.slab_flags		= SLAB_DESTROY_BY_RCU,
 	.twsk_prot		= &tcp_timewait_sock_ops,
 	.rsk_prot		= &tcp_request_sock_ops,
-	.h.hashinfo		= &tcp_hashinfo,
+	.h.hashinfo		= &tcp_hashinfo,        /* tcp协议的socket用的hash结构就是inet_hash */
 	.no_autobind		= true,
 #ifdef CONFIG_COMPAT
 	.compat_setsockopt	= compat_tcp_setsockopt,

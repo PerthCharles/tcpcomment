@@ -200,10 +200,11 @@ extern void snmp_mib_free(void __percpu *ptr[2]);
 extern struct local_ports {
 	seqlock_t	lock;
 	int		range[2];
-} sysctl_local_ports;
+} sysctl_local_ports;   
 extern void inet_get_local_port_range(int *low, int *high);
 
 extern unsigned long *sysctl_local_reserved_ports;
+/* 判断一个port是否是设置的预留端口， sysctl_local_reserved_ports是一个bitmap */
 static inline int inet_is_reserved_local_port(int port)
 {
 	return test_bit(port, sysctl_local_reserved_ports);
