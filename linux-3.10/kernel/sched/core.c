@@ -2947,6 +2947,7 @@ pick_next_task(struct rq *rq)
  *          - return from syscall or exception to user-space
  *          - return from interrupt-handler to user-space
  */
+/* TODO: 适当的了解进程调度相关的内核实现 */
 static void __sched __schedule(void)
 {
 	struct task_struct *prev, *next;

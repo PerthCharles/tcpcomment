@@ -349,7 +349,7 @@ static struct file_system_type sock_fs_type = {
  *	with shared fd spaces, we cannot solve it inside kernel,
  *	but we take care of internal coherence yet.
  */
-
+/* 创建一个socket类型的file */
 struct file *sock_alloc_file(struct socket *sock, int flags, const char *dname)
 {
 	struct qstr name = { .name = "" };
@@ -1604,7 +1604,7 @@ SYSCALL_DEFINE2(listen, int, fd, int, backlog)
  *	status to recvmsg. We need to add that support in a way thats
  *	clean when we restucture accept also.
  */
-
+/* accept对应的处理函数，BSD socket的接口默认的flags == 0 */
 SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 		int __user *, upeer_addrlen, int, flags)
 {
@@ -1619,15 +1619,18 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	if (SOCK_NONBLOCK != O_NONBLOCK && (flags & SOCK_NONBLOCK))
 		flags = (flags & ~SOCK_NONBLOCK) | O_NONBLOCK;
 
+    /* 根据fd找到BSD socket, 这是出于listen状态的socket */
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (!sock)
 		goto out;
 
 	err = -ENFILE;
+    /* 新分配一个BSD socket */
 	newsock = sock_alloc();
 	if (!newsock)
 		goto out_put;
 
+    /* 关键变量都是从母socket而来 */
 	newsock->type = sock->type;
 	newsock->ops = sock->ops;
 
@@ -1637,12 +1640,14 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	 */
 	__module_get(newsock->ops->owner);
 
+    /* 新分配一个未被使用的fd */
 	newfd = get_unused_fd_flags(flags);
 	if (unlikely(newfd < 0)) {
 		err = newfd;
 		sock_release(newsock);
 		goto out_put;
 	}
+    /* 新分配一个socket类型的file */
 	newfile = sock_alloc_file(newsock, flags, sock->sk->sk_prot_creator->name);
 	if (unlikely(IS_ERR(newfile))) {
 		err = PTR_ERR(newfile);
@@ -1655,11 +1660,14 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	if (err)
 		goto out_fd;
 
+    /* 对应inet_accept() 
+     * 将出于parent socket accept queue中的连接拿出来，成为正式独立的TCP connection */
 	err = sock->ops->accept(sock, newsock, sock->file->f_flags);
 	if (err < 0)
 		goto out_fd;
 
 	if (upeer_sockaddr) {
+        /* 如果要获取peer address, 则调用inet_getname()获取 */
 		if (newsock->ops->getname(newsock, (struct sockaddr *)&address,
 					  &len, 2) < 0) {
 			err = -ECONNABORTED;
@@ -1672,7 +1680,6 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	}
 
 	/* File flags are not inherited via accept() unlike another OSes. */
-
 	fd_install(newfd, newfile);
 	err = newfd;
 
@@ -1686,6 +1693,7 @@ out_fd:
 	goto out_put;
 }
 
+/* sys_accept()系统调用 */
 SYSCALL_DEFINE3(accept, int, fd, struct sockaddr __user *, upeer_sockaddr,
 		int __user *, upeer_addrlen)
 {

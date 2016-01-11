@@ -241,7 +241,7 @@ static inline void reqsk_queue_add(struct request_sock_queue *queue,
 	req->dl_next = NULL;
 }
 
-/* 将req从accept queue中移除 */
+/* 将req从accept queue中移除, 并返回第一个req */
 static inline struct request_sock *reqsk_queue_remove(struct request_sock_queue *queue)
 {
 	struct request_sock *req = queue->rskq_accept_head;

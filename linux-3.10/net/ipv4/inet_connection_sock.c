@@ -310,6 +310,7 @@ EXPORT_SYMBOL_GPL(inet_csk_get_port);
  * Wait for an incoming connection, avoid race conditions. This must be called
  * with the socket locked.
  */
+/* server段主动调accept()时，如果还没有任何req完成3WHS，则调用该函数进行等待 */
 static int inet_csk_wait_for_connect(struct sock *sk, long timeo)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
@@ -335,12 +336,15 @@ static int inet_csk_wait_for_connect(struct sock *sk, long timeo)
 					  TASK_INTERRUPTIBLE);
 		release_sock(sk);
 		if (reqsk_queue_empty(&icsk->icsk_accept_queue))
+            /* 继续睡timeo长度 */
 			timeo = schedule_timeout(timeo);
 		lock_sock(sk);
 		err = 0;
+        /* 有完成了3WHS的req,则退出 */
 		if (!reqsk_queue_empty(&icsk->icsk_accept_queue))
 			break;
 		err = -EINVAL;
+        /* 如果母sk的状态不再是listen了，也要break, 返回错误 */
 		if (sk->sk_state != TCP_LISTEN)
 			break;
 		err = sock_intr_errno(timeo);
@@ -360,22 +364,28 @@ static int inet_csk_wait_for_connect(struct sock *sk, long timeo)
 struct sock *inet_csk_accept(struct sock *sk, int flags, int *err)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
+    /* 获取accept queue */
 	struct request_sock_queue *queue = &icsk->icsk_accept_queue;
 	struct sock *newsk;
 	struct request_sock *req;
 	int error;
 
+    /* 把处于LISTEN状态的socket lock住 */
 	lock_sock(sk);
 
 	/* We need to make sure that this socket is listening,
 	 * and that it has something pending.
 	 */
 	error = -EINVAL;
+    /* 母sk必须处于listen状态 */
 	if (sk->sk_state != TCP_LISTEN)
 		goto out_err;
 
 	/* Find already established connection */
+    /* 如果accept queue不为空，则说明有已经完成了3WHS的连接等待accept 
+     * 如果为空，则看看是不是一个blocking socket了，是的话，就等着睡会儿 */
 	if (reqsk_queue_empty(queue)) {
+        /* 默认的socket是blocking的，同时默认的sk_rcvtimeo值是LONG_MAX, 即一直等下去 */
 		long timeo = sock_rcvtimeo(sk, flags & O_NONBLOCK);
 
 		/* If this is a non blocking socket don't sleep */
@@ -383,14 +393,20 @@ struct sock *inet_csk_accept(struct sock *sk, int flags, int *err)
 		if (!timeo)
 			goto out_err;
 
+        /* server段程序主动调用accept来等待完成3WHS的connection request */
+        /* TODO： 高并发时，这个函数是否会成为瓶颈？ 是否存在优化的可能 ? 
+         * 要回答这个问题，需要把schedule()搞明白 */
 		error = inet_csk_wait_for_connect(sk, timeo);
 		if (error)
 			goto out_err;
 	}
+    /* 如果执行到这里，说明已经有完成3WHS的req了 */
 	req = reqsk_queue_remove(queue);
+    /* 已经完成3WHS的req的sk也肯定是创建好的了，直接获取就好 */
 	newsk = req->sk;
 
-	sk_acceptq_removed(sk);
+	sk_acceptq_removed(sk); /* 更新accept queue len */
+    /* TODO: fastopen 相关代码 */
 	if (sk->sk_protocol == IPPROTO_TCP && queue->fastopenq != NULL) {
 		spin_lock_bh(&queue->fastopenq->lock);
 		if (tcp_rsk(req)->listener) {
@@ -407,6 +423,7 @@ struct sock *inet_csk_accept(struct sock *sk, int flags, int *err)
 	}
 out:
 	release_sock(sk);
+    /* 释放req */
 	if (req)
 		__reqsk_free(req);
 	return newsk;

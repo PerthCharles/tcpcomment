@@ -745,11 +745,12 @@ EXPORT_SYMBOL(inet_stream_connect);
 /*
  *	Accept a pending connection. The TCP layer now gives BSD semantics.
  */
-
+/* PF_INET对应的accept()处理函数 */
 int inet_accept(struct socket *sock, struct socket *newsock, int flags)
 {
-	struct sock *sk1 = sock->sk;
+	struct sock *sk1 = sock->sk;        /* 获取parent sk */
 	int err = -EINVAL;
+    /* 对应inet_csk_accept()来执行具体的accept()动作 */
 	struct sock *sk2 = sk1->sk_prot->accept(sk1, flags, &err);
 
 	if (!sk2)
@@ -762,8 +763,10 @@ int inet_accept(struct socket *sock, struct socket *newsock, int flags)
 		  (TCPF_ESTABLISHED | TCPF_SYN_RECV |
 		  TCPF_CLOSE_WAIT | TCPF_CLOSE)));
 
+    /* 将TCP sk与BSD socket进行嫁接，如wait queue, BSD socket的sk指针指向TCP sk */
 	sock_graft(sk2, newsock);
 
+    /* 将新建立的BSD socket设置为connected状态! */
 	newsock->state = SS_CONNECTED;
 	err = 0;
 	release_sock(sk2);
@@ -776,6 +779,7 @@ EXPORT_SYMBOL(inet_accept);
 /*
  *	This does both peername and sockname.
  */
+/* 获取address, 根据peer变量来区分peer与local */
 int inet_getname(struct socket *sock, struct sockaddr *uaddr,
 			int *uaddr_len, int peer)
 {
@@ -789,12 +793,14 @@ int inet_getname(struct socket *sock, struct sockaddr *uaddr,
 		    (((1 << sk->sk_state) & (TCPF_CLOSE | TCPF_SYN_SENT)) &&
 		     peer == 1))
 			return -ENOTCONN;
+        /* 获取peer的address信息 */
 		sin->sin_port = inet->inet_dport;
 		sin->sin_addr.s_addr = inet->inet_daddr;
 	} else {
 		__be32 addr = inet->inet_rcv_saddr;
 		if (!addr)
 			addr = inet->inet_saddr;
+        /* 获取local的address信息 */
 		sin->sin_port = inet->inet_sport;
 		sin->sin_addr.s_addr = addr;
 	}

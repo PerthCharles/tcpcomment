@@ -799,6 +799,7 @@ static inline int sk_backlog_rcv(struct sock *sk, struct sk_buff *skb)
 	return sk->sk_backlog_rcv(sk, skb);
 }
 
+/* TODO： 分析RPS实现 */
 static inline void sock_rps_record_flow(const struct sock *sk)
 {
 #ifdef CONFIG_RPS
@@ -1705,12 +1706,13 @@ static inline void sock_orphan(struct sock *sk)
 	write_unlock_bh(&sk->sk_callback_lock);
 }
 
+/* graft: 嫁接 */
 static inline void sock_graft(struct sock *sk, struct socket *parent)
 {
 	write_lock_bh(&sk->sk_callback_lock);
 	sk->sk_wq = parent->wq;
-	parent->sk = sk;
-	sk_set_socket(sk, parent);
+	parent->sk = sk;    /* BSD socket指向sk */
+	sk_set_socket(sk, parent);  /* sk指向BSD socket */
 	security_sock_graft(sk, parent);
 	write_unlock_bh(&sk->sk_callback_lock);
 }
@@ -2103,6 +2105,7 @@ static inline gfp_t gfp_any(void)
 	return in_softirq() ? GFP_ATOMIC : GFP_KERNEL;
 }
 
+/* 如果是non block socket, 则返回0； 否则返回sk_rcvtimeo */
 static inline long sock_rcvtimeo(const struct sock *sk, bool noblock)
 {
 	return noblock ? 0 : sk->sk_rcvtimeo;
