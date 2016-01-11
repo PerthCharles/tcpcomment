@@ -576,6 +576,7 @@ struct request_sock *inet_csk_search_req(const struct sock *sk,
 }
 EXPORT_SYMBOL_GPL(inet_csk_search_req);
 
+/* 将req加入到syn queue中，并更新qlen */
 void inet_csk_reqsk_queue_hash_add(struct sock *sk, struct request_sock *req,
 				   unsigned long timeout)
 {
@@ -606,7 +607,7 @@ static inline void syn_ack_recalc(struct request_sock *req, const int thresh,
 {
     /* 如果用户程序未指定defer_accept时间，则肯定要重传syn/ack */
 	if (!rskq_defer_accept) {
-		*expire = req->num_timeout >= thresh;   /* 超时次数超过上限则判断过期 */
+		*expire = req->num_timeout >= thresh;   /* 超时次数超过上限则判断过期, 这个上限是根据young req占比调整过的 */
 		*resend = 1;
 		return;
 	}
@@ -619,7 +620,11 @@ static inline void syn_ack_recalc(struct request_sock *req, const int thresh,
      * 2.
      * 如果已经收到过三次握手的最后一个ACK，同时超时次数也超过了defer_accept允许的值,
      * 也超过了上限，则判定为过期 */
-    /* TODO: 可见max_retries并没有什么用啊，因为在用到它的时候，它只会等于rskq_defer_accept */
+
+    /* 此处max_retries等于rskq_defer_accept
+     * 一般情况自然是thresh 要小于max_retries，所以defer accept的expire时间符合预期；
+     * 但如果发送   max_retries <= num_timeout < thresh的情况，
+     * 这个req其实并不会严格按照defer accept的设置而超时，而是会在syn queue中多活一会儿 */
 	*expire = req->num_timeout >= thresh &&     
 		  (!inet_rsk(req)->acked || req->num_timeout >= max_retries);
 	/*
@@ -629,15 +634,16 @@ static inline void syn_ack_recalc(struct request_sock *req, const int thresh,
 	 */
     /* 1. 如果已经开启了defer_accept，如果没有收到三次握手的最后一个ACK包，当然要重传syn/ack
      * 2. 如果已经收到了最后一个ACK包，那么仅在最后一次未导致expire的timeout发生时进行重传
-     *      TODO: 但这样会不会有BUG ？
+     *      TODO-DONE: 但这样会不会有BUG ？
      *          比如一个攻击者在攻击时，每次收到syn/ack时都返回一个合法的bare
      *          ack来完成三次握手，那么不就导致这个request sock一直存活吗？
+     *      答：想多了，下一次expire就会过期，req就会被删掉了 
      */
 	*resend = !inet_rsk(req)->acked ||
 		  req->num_timeout >= rskq_defer_accept - 1;
 }
 
-/* 重传一个syn/ack包，冲床成功则num_retrans加1 */
+/* 重传一个syn/ack包，重传成功则num_retrans加1 */
 int inet_rtx_syn_ack(struct sock *parent, struct request_sock *req)
 {
 	int err = req->rsk_ops->rtx_syn_ack(parent, req);
@@ -649,6 +655,7 @@ int inet_rtx_syn_ack(struct sock *parent, struct request_sock *req)
 }
 EXPORT_SYMBOL(inet_rtx_syn_ack);
 
+/* 定时的重传syn/ack包，定时的清理过期的req */
 void inet_csk_reqsk_queue_prune(struct sock *parent,
 				const unsigned long interval,
 				const unsigned long timeout,
@@ -657,12 +664,14 @@ void inet_csk_reqsk_queue_prune(struct sock *parent,
 	struct inet_connection_sock *icsk = inet_csk(parent);
 	struct request_sock_queue *queue = &icsk->icsk_accept_queue;
 	struct listen_sock *lopt = queue->listen_opt;
+    /* synack的重传次数 */
 	int max_retries = icsk->icsk_syn_retries ? : sysctl_tcp_synack_retries;
 	int thresh = max_retries;
 	unsigned long now = jiffies;
 	struct request_sock **reqp, *req;
 	int i, budget;
 
+    /* 如果syn queue为空，则直接返回 */
 	if (lopt == NULL || lopt->qlen == 0)
 		return;
 
@@ -683,6 +692,9 @@ void inet_csk_reqsk_queue_prune(struct sock *parent,
 	 * embrions; and abort old ones without pity, if old
 	 * ones are about to clog our table.
 	 */
+    /* 如果syn queue已经使用了超过一半的限额, 则根据young的数量来降低重传syn/ack的阈值
+     * 规则：young req的数量越少，thresh就越小。 从而老的req能够更快的被踢出去  */
+    /* 极端例子：如果一个young req都没有，那么thresh将会降至2 */
 	if (lopt->qlen>>(lopt->max_qlen_log-1)) {
 		int young = (lopt->qlen_young<<1);
 
@@ -698,36 +710,53 @@ void inet_csk_reqsk_queue_prune(struct sock *parent,
 	if (queue->rskq_defer_accept)
 		max_retries = queue->rskq_defer_accept;
 
+    /* 默认timeout = 1s， interval = 200ms
+     * 即每次只处理2/5的 总syn queue长度 
+     * TODO-DONE: 为什么只处理2/5就能work ? 
+     * 这个函数每隔interval执行一次，每次扫描（timeout/interval）%，则能保证在timeout时间内肯定能被扫描到 
+     * TODO: 这个地方为什么不根据timeout的先后顺序来优化这块？ */
 	budget = 2 * (lopt->nr_table_entries / (timeout / interval));
 	i = lopt->clock_hand;
 
 	do {
+        /* 获取第i条hash冲突链 */
 		reqp=&lopt->syn_table[i];
 		while ((req = *reqp) != NULL) {
+            /* 如果对应req超时了 */
 			if (time_after_eq(now, req->expires)) {
+                /* expire表示是否要删除过期的req, resend表示是否要重传syn/ack */
 				int expire = 0, resend = 0;
 
+                /* 计算expire和resend */
 				syn_ack_recalc(req, thresh, max_retries,
 					       queue->rskq_defer_accept,
 					       &expire, &resend);
+                /* MIB计数器：增加syn/ack timer超时的次数 */
 				req->rsk_ops->syn_ack_timeout(parent, req);
+                /* 如果没有过期，则重传syn/ack包
+                 * NOTE: 对于defer accept的socket，之后再过期之前重传一次syn/ack包，其他时间都不用重传 */
 				if (!expire &&
 				    (!resend ||
 				     !inet_rtx_syn_ack(parent, req) ||
 				     inet_rsk(req)->acked)) {
 					unsigned long timeo;
 
+                    /* 进行过syn/ack重传，则要调整young req数量 */
 					if (req->num_timeout++ == 0)
 						lopt->qlen_young--;
+
+                    /* 根据超时次数，重新设置timeo */
 					timeo = min(timeout << req->num_timeout,
 						    max_rto);
                     /* 设置expires值使用num_timeout进行指数回避，而不是num_retrans */
 					req->expires = now + timeo;
+                    /* 继续检查下一个req */
 					reqp = &req->dl_next;
 					continue;
 				}
 
 				/* Drop this request */
+                /* 将req从reqp所在的hash冲突链中删除 */
 				inet_csk_reqsk_queue_unlink(parent, req, reqp);
 				reqsk_queue_removed(queue, req);
 				reqsk_free(req);
@@ -742,6 +771,7 @@ void inet_csk_reqsk_queue_prune(struct sock *parent,
 
 	lopt->clock_hand = i;
 
+    /* 如果syn queue中还有东西，则重设keepalive timer */
 	if (lopt->qlen)
 		inet_csk_reset_keepalive_timer(parent, interval);
 }
@@ -832,17 +862,24 @@ void inet_csk_prepare_forced_close(struct sock *sk)
 }
 EXPORT_SYMBOL(inet_csk_prepare_forced_close);
 
+/* 将socket设置为listen状态 */
 int inet_csk_listen_start(struct sock *sk, const int nr_table_entries)
 {
 	struct inet_sock *inet = inet_sk(sk);
 	struct inet_connection_sock *icsk = inet_csk(sk);
+    /* 分配accept queue，nr_table_entries = min(backlog in listen(), sysctl_somaxconn) */
+    /* TODO-DONE: 只分配accept queue, 那么半连接队列是在哪里分配的呢？ 
+     * 本质上两个队列都分配了：
+     *      a. struct request_sock_queue中的rskq_accept_head指向的链表就是accept链表
+     *      b. struct request_sock_queue中的listen_opt指向的结构体就是syn queue */
 	int rc = reqsk_queue_alloc(&icsk->icsk_accept_queue, nr_table_entries);
 
 	if (rc != 0)
 		return rc;
 
-	sk->sk_max_ack_backlog = 0;
-	sk->sk_ack_backlog = 0;
+	sk->sk_max_ack_backlog = 0;     /* 记录sys_listen()时，用户指定的backlog大小 */
+	sk->sk_ack_backlog = 0;         /* 记录当前存在backlog queu中的连接请求的数量 */
+    /* 初始化delay ack结构体。 TODO：为什么在这个地方初始化 ? */
 	inet_csk_delack_init(sk);
 
 	/* There is race window here: we announce ourselves listening,
@@ -850,11 +887,26 @@ int inet_csk_listen_start(struct sock *sk, const int nr_table_entries)
 	 * It is OK, because this socket enters to hash table only
 	 * after validation is complete.
 	 */
+    /* 将sk设置为listen状态 */
 	sk->sk_state = TCP_LISTEN;
+    /* 对应inet_csk_get_port()
+     * TODO-DONE： bind()的时候不是绑定过一次了吗？ 怎么又来一遍？
+     * 答：check if we are still eligiable to use the sama port to which we earlier bound this socket
+     *     考虑如下情况：
+     *          两个线程A和B同时绑定一个端口，A和B在bind()时都用了reuse方式，所以都绑定成功了
+     *          之后A首先将socket置入TCP_LISTEN，然后关闭了reuse
+     *          当B在执行listen时，如果不再次检查端口是否可以被使用，那么就会有问题了！
+     *      所以这里还需要再判断一次。
+     *
+     *      当然这种情况概率小，而且由于inet_num已经制定了，执行效率也很高，不用太担心性能 
+     * TODO-DONE： inet_num表示local port, inet_sport表示source port，这两个变量存在什么区别？ 
+     * 答：通过回答上一个问题，目前猜测这两个值的作用也是由上面的逻辑决定的
+     *     inet_num是bind()成功后的port,  inet_sport是listen()后的端口(真正对外服务的端口) */
 	if (!sk->sk_prot->get_port(sk, inet->inet_num)) {
 		inet->inet_sport = htons(inet->inet_num);
 
 		sk_dst_reset(sk);
+        /* 将该sk加入到tcp listening hashinfo 中，对应inet_hash() */
 		sk->sk_prot->hash(sk);
 
 		return 0;

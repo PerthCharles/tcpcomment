@@ -614,7 +614,7 @@ static void tcp_write_timer(unsigned long data)
 /*
  *	Timer for listening sockets
  */
-
+/* 定时的重传syn/ack包、清除过期的req */
 static void tcp_synack_timer(struct sock *sk)
 {
 	inet_csk_reqsk_queue_prune(sk, TCP_SYNQ_INTERVAL,
@@ -654,6 +654,7 @@ static void tcp_keepalive_timer (unsigned long data)
 		goto out;
 	}
 
+    /* synack timer是复用的keepalive timer */
 	if (sk->sk_state == TCP_LISTEN) {
 		tcp_synack_timer(sk);
 		goto out;

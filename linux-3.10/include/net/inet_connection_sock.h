@@ -299,11 +299,13 @@ static inline int inet_csk_reqsk_queue_young(const struct sock *sk)
 	return reqsk_queue_len_young(&inet_csk(sk)->icsk_accept_queue);
 }
 
+/* 判断syn queue是否占满 */
 static inline int inet_csk_reqsk_queue_is_full(const struct sock *sk)
 {
 	return reqsk_queue_is_full(&inet_csk(sk)->icsk_accept_queue);
 }
 
+/* 将req从queue中删除, 具体是syn queue还是accept queue, 是由prev决定的 */
 static inline void inet_csk_reqsk_queue_unlink(struct sock *sk,
 					       struct request_sock *req,
 					       struct request_sock **prev)

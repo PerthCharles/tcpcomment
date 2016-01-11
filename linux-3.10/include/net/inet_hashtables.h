@@ -259,6 +259,7 @@ static inline int inet_lhashfn(struct net *net, const unsigned short num)
 	return (num + net_hash_mix(net)) & (INET_LHTABLE_SIZE - 1);
 }
 
+/* 根据inet_num的hash值查找tcp listen hashinfo */
 static inline int inet_sk_listen_hashfn(const struct sock *sk)
 {
 	return inet_lhashfn(sock_net(sk), inet_sk(sk)->inet_num);

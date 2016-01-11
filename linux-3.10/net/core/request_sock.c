@@ -37,15 +37,20 @@
 int sysctl_max_syn_backlog = 256;
 EXPORT_SYMBOL(sysctl_max_syn_backlog);
 
+/* 分配request sock queue */
 int reqsk_queue_alloc(struct request_sock_queue *queue,
 		      unsigned int nr_table_entries)
 {
 	size_t lopt_size = sizeof(struct listen_sock);
 	struct listen_sock *lopt;
 
+    /* 分配半连接队列(syn queue)， lopt指向的是半连接队列 !!! 即syn queue */
+    /* 至此可见syn queue的长度由 min(backlog, sysctl_somaxconn, sysctl_max_syn_backlog) 决定! */
+    /* 当然最小值，和取整这些细节也要注意 */
 	nr_table_entries = min_t(u32, nr_table_entries, sysctl_max_syn_backlog);
-	nr_table_entries = max_t(u32, nr_table_entries, 8);
+	nr_table_entries = max_t(u32, nr_table_entries, 8);     /* 强制设置最小值： 8 */
 	nr_table_entries = roundup_pow_of_two(nr_table_entries + 1);
+    /* listen_sock最后一个元素是变长数组的实现，所以分配内存时要根据entry个数，决定size */
 	lopt_size += nr_table_entries * sizeof(struct request_sock *);
 	if (lopt_size > PAGE_SIZE)
 		lopt = vzalloc(lopt_size);
@@ -54,10 +59,12 @@ int reqsk_queue_alloc(struct request_sock_queue *queue,
 	if (lopt == NULL)
 		return -ENOMEM;
 
+    /* 计算max_qlen_log值，它等于 log(nr_table_entries) */
 	for (lopt->max_qlen_log = 3;
 	     (1 << lopt->max_qlen_log) < nr_table_entries;
 	     lopt->max_qlen_log++);
 
+    /* 获取一个hash random的seed, 比如用于生成随机的init_seq等 */
 	get_random_bytes(&lopt->hash_rnd, sizeof(lopt->hash_rnd));
 	rwlock_init(&queue->syn_wait_lock);
 	queue->rskq_accept_head = NULL;

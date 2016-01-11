@@ -415,6 +415,7 @@ int __inet_hash_nolisten(struct sock *sk, struct inet_timewait_sock *tw)
 	lock = inet_ehash_lockp(hashinfo, sk->sk_hash);
 
 	spin_lock(lock);
+    /* 将sk加入到ehash list的对应hash entry中 */
 	__sk_nulls_add_node_rcu(sk, list);
 	if (tw) {
 		WARN_ON(sk->sk_hash != tw->tw_hash);
@@ -431,20 +432,24 @@ static void __inet_hash(struct sock *sk)
 	struct inet_hashinfo *hashinfo = sk->sk_prot->h.hashinfo;
 	struct inet_listen_hashbucket *ilb;
 
+    /* 如果不是listen状态，则加入ehashinfo中 */
 	if (sk->sk_state != TCP_LISTEN) {
 		__inet_hash_nolisten(sk, NULL);
 		return;
 	}
 
 	WARN_ON(!sk_unhashed(sk));
+    /* inet listening bucket list */
 	ilb = &hashinfo->listening_hash[inet_sk_listen_hashfn(sk)];
 
 	spin_lock(&ilb->lock);
+    /* 将sk加入listening hashinfo中 */
 	__sk_nulls_add_node_rcu(sk, &ilb->head);
 	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
 	spin_unlock(&ilb->lock);
 }
 
+/* 将sk加入到hashinfo 中 */
 void inet_hash(struct sock *sk)
 {
 	if (sk->sk_state != TCP_CLOSE) {

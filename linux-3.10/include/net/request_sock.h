@@ -32,13 +32,17 @@ struct request_sock_ops {
 	int		obj_size;
 	struct kmem_cache	*slab;
 	char		*slab_name;
+    /* 负责重传syn/ack包 */
 	int		(*rtx_syn_ack)(struct sock *sk,
 				       struct request_sock *req);
+    /* 负责发送ack包 */
 	void		(*send_ack)(struct sock *sk, struct sk_buff *skb,
 				    struct request_sock *req);
+    /* 负责发送reset包 */
 	void		(*send_reset)(struct sock *sk,
 				      struct sk_buff *skb);
 	void		(*destructor)(struct request_sock *req);
+    /* 重传syn/ack的timer */
 	void		(*syn_ack_timeout)(struct sock *sk,
 					   struct request_sock *req);
 };
@@ -47,19 +51,23 @@ extern int inet_rtx_syn_ack(struct sock *parent, struct request_sock *req);
 
 /* struct request_sock - mini sock to represent a connection request
  */
+/* 为了性能考虑(防syn flooding攻击), 仅收到一个syn包不会创建一个庞大的tcp_sock结构体，
+ * 而是创建request_sock结构体临时代替用着. 只有在完成三次握手后，才会真的创建tcp_sock结构体 */
 struct request_sock {
-	struct request_sock		*dl_next;
+	struct request_sock		*dl_next;   /* 指向synq collisin hash table的下一个reqsk */
 	u16				mss;
-	u8				num_retrans; /* number of retransmits */
+    /* num_retrans 略大于num_timeout，因为在收到client重传的syn包时，timeout不会增加，retrans会增加 */
+	u8				num_retrans; /* number of retransmits, 即syn/ack重传的次数 */
 	u8				cookie_ts:1; /* syncookie: encode tcpopts in timestamp */
-	u8				num_timeout:7; /* number of timeouts */
+	u8				num_timeout:7; /* number of timeouts, 即syn/ack timer超时的次数 */
 	/* The following two fields can be easily recomputed I think -AK */
 	u32				window_clamp; /* window clamp at creation time */
 	u32				rcv_wnd;	  /* rcv_wnd offered first time */
-	u32				ts_recent;
-	unsigned long			expires;
+	u32				ts_recent;      /* 最近收到的一个SYN包中带着的timestamp值，如果有的话 */
+	unsigned long			expires;    /* 用于重传syn/ack的timer值 */
 	const struct request_sock_ops	*rsk_ops;
-	struct sock			*sk;
+    /* 指向为新连接建立的sk结构体，在syn queue中sk=NULL, 在accept queue中才有效 */
+	struct sock			*sk;    
 	u32				secid;
 	u32				peer_secid;
 };
@@ -81,6 +89,7 @@ static inline void __reqsk_free(struct request_sock *req)
 	kmem_cache_free(req->rsk_ops->slab, req);
 }
 
+/* 删除一个request_sock */
 static inline void reqsk_free(struct request_sock *req)
 {
 	req->rsk_ops->destructor(req);
@@ -94,14 +103,23 @@ extern int sysctl_max_syn_backlog;
  * @max_qlen_log - log_2 of maximal queued SYNs/REQUESTs
  */
 struct listen_sock {
-	u8			max_qlen_log;
-	u8			synflood_warned;
+	u8			max_qlen_log;       /* log_2 of maximal queued SYNs */
+	u8			synflood_warned;    /* 标记是否打印了synflood warning */
 	/* 2 bytes hole, try to use */
-	int			qlen;
-	int			qlen_young;
-	int			clock_hand;
+    /* 书中有如下一段描述，等具体看qlen qlen_young的代码时好好理解
+     * Basically, the policy is to still drop any new connection request based on the young
+     * connection requests in the following case:
+     *     a. SYN queue can accommodate more open connection requests in the SYN queue (tcp_synq_is_full() == 0), *AND*
+     *     b. Accept queue is full (tcp_acceptq_is_full() != 0) and SYN queue still contains more than one young
+     *        connection request (tcp_synq_young() > 1) 
+     */
+	int			qlen;               /* 记录syn queue中的connection request个数 */
+	int			qlen_young;         /* 记录syn queue中，未重传syn/ack包的connection request个数 */
+	int			clock_hand;         /* 记录syn queue timer每次超时后，从哪个地方开始接着处理 */
 	u32			hash_rnd;
 	u32			nr_table_entries;
+    /* syn queue的hash table， 每一个entries就是一个request_sock的hash冲突链
+     * hash因子是：client port + client ip */
 	struct request_sock	*syn_table[0];
 };
 
@@ -150,6 +168,8 @@ struct fastopen_queue {
  * are always protected from the main sock lock.
  */
 struct request_sock_queue {
+    /* 只要放到accept queue中的reqsk，它的sk域不为空。
+     * 此时TCP连接其实已经建立了，client完全是可以发送数据给这个sk的 */
 	struct request_sock	*rskq_accept_head;
 	struct request_sock	*rskq_accept_tail;
 	rwlock_t		syn_wait_lock;
@@ -159,7 +179,8 @@ struct request_sock_queue {
      * syn/ack的timer), 超过指定时间还没有收到对端发送过来数据，则socket会被删除 */
 	u8			rskq_defer_accept;  
 	/* 3 bytes hole, try to pack */
-	struct listen_sock	*listen_opt;
+    /* 这就是半连接队列，即受到了第一个SYN，还没完成3WHS的request sock */
+	struct listen_sock	*listen_opt;    
 	struct fastopen_queue	*fastopenq; /* This is non-NULL iff TFO has been
 					     * enabled on this listener. Check
 					     * max_qlen != 0 in fastopen_queue
@@ -185,11 +206,13 @@ static inline struct request_sock *
 	return req;
 }
 
+/* 判断accept queue是否为空 */
 static inline int reqsk_queue_empty(struct request_sock_queue *queue)
 {
 	return queue->rskq_accept_head == NULL;
 }
 
+/* 将req从队列中移除 */
 static inline void reqsk_queue_unlink(struct request_sock_queue *queue,
 				      struct request_sock *req,
 				      struct request_sock **prev_req)
@@ -204,9 +227,11 @@ static inline void reqsk_queue_add(struct request_sock_queue *queue,
 				   struct sock *parent,
 				   struct sock *child)
 {
+    /* 将新创建的sk挂载到req中 */
 	req->sk = child;
-	sk_acceptq_added(parent);
+	sk_acceptq_added(parent);   /* parent是处于listen状态的socket，增加它的accept queue的计数器 */
 
+    /* 将req加入到accept queue中 */
 	if (queue->rskq_accept_head == NULL)
 		queue->rskq_accept_head = req;
 	else
@@ -216,6 +241,7 @@ static inline void reqsk_queue_add(struct request_sock_queue *queue,
 	req->dl_next = NULL;
 }
 
+/* 将req从accept queue中移除 */
 static inline struct request_sock *reqsk_queue_remove(struct request_sock_queue *queue)
 {
 	struct request_sock *req = queue->rskq_accept_head;
@@ -229,17 +255,20 @@ static inline struct request_sock *reqsk_queue_remove(struct request_sock_queue 
 	return req;
 }
 
+/* 将req从syn queue移除后，更新计数器 queue len */
 static inline int reqsk_queue_removed(struct request_sock_queue *queue,
 				      struct request_sock *req)
 {
 	struct listen_sock *lopt = queue->listen_opt;
 
+    /* 如果没有重传过syn/ack，则是young req */
 	if (req->num_timeout == 0)
 		--lopt->qlen_young;
 
 	return --lopt->qlen;
 }
 
+/* 将req加入syn queue后，更新计数器 queue len */
 static inline int reqsk_queue_added(struct request_sock_queue *queue)
 {
 	struct listen_sock *lopt = queue->listen_opt;
@@ -250,21 +279,25 @@ static inline int reqsk_queue_added(struct request_sock_queue *queue)
 	return prev_qlen;
 }
 
+/* 返回syn queue的长度 */
 static inline int reqsk_queue_len(const struct request_sock_queue *queue)
 {
 	return queue->listen_opt != NULL ? queue->listen_opt->qlen : 0;
 }
 
+/* 返回syn queue中没有重传syn/ack包的req个数 */
 static inline int reqsk_queue_len_young(const struct request_sock_queue *queue)
 {
 	return queue->listen_opt->qlen_young;
 }
 
+/* 判断syn queue是否已经满了 */
 static inline int reqsk_queue_is_full(const struct request_sock_queue *queue)
 {
 	return queue->listen_opt->qlen >> queue->listen_opt->max_qlen_log;
 }
 
+/* 将req加入到syn queue中对应的collision hash list中 */
 static inline void reqsk_queue_hash_req(struct request_sock_queue *queue,
 					u32 hash, struct request_sock *req,
 					unsigned long timeout)

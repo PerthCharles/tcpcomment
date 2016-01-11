@@ -213,6 +213,7 @@ static __net_init int sysctl_core_net_init(struct net *net)
 {
 	struct ctl_table *tbl;
 
+    /* 初始化 sysctl_somaxconn，默认值为128 */
 	net->core.sysctl_somaxconn = SOMAXCONN;
 
 	tbl = netns_core_table;

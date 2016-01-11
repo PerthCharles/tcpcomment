@@ -710,16 +710,19 @@ static inline gfp_t sk_gfp_atomic(struct sock *sk, gfp_t gfp_mask)
 	return GFP_ATOMIC | (sk->sk_allocation & __GFP_MEMALLOC);
 }
 
+/* 减少accept queue计数器 */
 static inline void sk_acceptq_removed(struct sock *sk)
 {
 	sk->sk_ack_backlog--;
 }
 
+/* 增加accept queue计数器 */
 static inline void sk_acceptq_added(struct sock *sk)
 {
 	sk->sk_ack_backlog++;
 }
 
+/* 判断accept queue是否占满 */
 static inline bool sk_acceptq_is_full(const struct sock *sk)
 {
 	return sk->sk_ack_backlog > sk->sk_max_ack_backlog;

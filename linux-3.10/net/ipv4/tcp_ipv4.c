@@ -1517,7 +1517,11 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	 */
     /* 如果连接队列(即已经完成三次握手，就等server端执行accept()正式创建TCP流了)已经占满,
      *  并且有未重传过的半连接，则丢弃这个SYN请求
-     *  TODO: queue_young的内在含义是什么？ 为什么还要判断这个？*/
+     *  TODO-DONE: queue_young的内在含义是什么？ 为什么还要判断这个?
+     *  答： queue young表示未重传过syn/ack的req个数
+     *  这里的逻辑是：
+     *  a. accept queue如果满了，就应该选择丢弃request了, 继续判断b （尽管syn queue可能没有满）
+     *  b. 如果syn queue里面还有yong的req, 那么就丢弃这个新来的req！ */
 	if (sk_acceptq_is_full(sk) && inet_csk_reqsk_queue_young(sk) > 1) {
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_LISTENOVERFLOWS);
 		goto drop;
@@ -2973,7 +2977,7 @@ struct proto tcp_prot = {
 	.backlog_rcv		= tcp_v4_do_rcv,
 	.release_cb		= tcp_release_cb,
 	.mtu_reduced		= tcp_v4_mtu_reduced,
-	.hash			= inet_hash,    
+	.hash			= inet_hash,            /* 将socket加入到tcp_hashinfo的合适(根据sk_state)的结构中 */
 	.unhash			= inet_unhash,
 	.get_port		= inet_csk_get_port,
 	.enter_memory_pressure	= tcp_enter_memory_pressure,

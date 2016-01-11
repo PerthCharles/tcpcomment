@@ -1567,21 +1567,25 @@ SYSCALL_DEFINE3(bind, int, fd, struct sockaddr __user *, umyaddr, int, addrlen)
  *	necessary for a listen, and if that works, we mark the socket as
  *	ready for listening.
  */
-
+/* listen系统调用
+ * NOTE: 这里的backlog值表示能够完成三次握手的等待accept的连接请求数 */
 SYSCALL_DEFINE2(listen, int, fd, int, backlog)
 {
 	struct socket *sock;
 	int err, fput_needed;
 	int somaxconn;
 
+    /* 根据fd找到对应的BSD socket */
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (sock) {
+        /* sysctl_somaxconn系统配置会限制listen时的backlog大小，默认值为128。作为服务器时应该调大 */
 		somaxconn = sock_net(sock->sk)->core.sysctl_somaxconn;
 		if ((unsigned int)backlog > somaxconn)
 			backlog = somaxconn;
 
 		err = security_socket_listen(sock, backlog);
 		if (!err)
+            /* PF_INET对应: inet_listen() */
 			err = sock->ops->listen(sock, backlog);
 
 		fput_light(sock->file, fput_needed);

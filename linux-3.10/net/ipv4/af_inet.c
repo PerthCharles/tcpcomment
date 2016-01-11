@@ -195,6 +195,7 @@ static int inet_autobind(struct sock *sk)
 /*
  *	Move a socket into listening state.
  */
+/* PF_INET对应的sys_listen()的具体处理函数 */
 int inet_listen(struct socket *sock, int backlog)
 {
 	struct sock *sk = sock->sk;
@@ -207,6 +208,7 @@ int inet_listen(struct socket *sock, int backlog)
 	if (sock->state != SS_UNCONNECTED || sock->type != SOCK_STREAM)
 		goto out;
 
+    /* sk应该处于CLOSE或LISTEN状态 */
 	old_state = sk->sk_state;
 	if (!((1 << old_state) & (TCPF_CLOSE | TCPF_LISTEN)))
 		goto out;
@@ -222,6 +224,7 @@ int inet_listen(struct socket *sock, int backlog)
 		 * socket was in TCP_LISTEN state previously but was
 		 * shutdown() (rather than close()).
 		 */
+        /* TODO: fastopen相关实现 */
 		if ((sysctl_tcp_fastopen & TFO_SERVER_ENABLE) != 0 &&
 		    inet_csk(sk)->icsk_accept_queue.fastopenq == NULL) {
 			if ((sysctl_tcp_fastopen & TFO_SERVER_WO_SOCKOPT1) != 0)
@@ -235,10 +238,14 @@ int inet_listen(struct socket *sock, int backlog)
 			if (err)
 				goto out;
 		}
+        /* 将socket设置为listen状态 */
 		err = inet_csk_listen_start(sk, backlog);
 		if (err)
 			goto out;
 	}
+    /* 设置backlog queue
+     * 如果一个已经进入了LISTEN状态的socket，那么调用listen只会调整它的backlog queue的大小 */
+    /* 这个值用于限制accept queue的长度，它可能比限制syn queue长度的值更大，所以名字中有个max */
 	sk->sk_max_ack_backlog = backlog;
 	err = 0;
 
