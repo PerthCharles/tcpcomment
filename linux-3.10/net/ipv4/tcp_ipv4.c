@@ -1812,6 +1812,9 @@ static struct sock *tcp_v4_hnd_req(struct sock *sk, struct sk_buff *skb)
 		return tcp_check_req(sk, skb, req, prev, false);
 
     /* 在ESTABLISHED状态的hash表中查找 */
+    /* TODO： 为什么又要在estab hashinfo中找一遍？ 
+     * 答： This is done because the packet may be a duplicate of the original connection request that
+     * is already in the established state now. */
 	nsk = inet_lookup_established(sock_net(sk), &tcp_hashinfo, iph->saddr,
 			th->source, iph->daddr, th->dest, inet_iif(skb));
 
