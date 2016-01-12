@@ -1560,6 +1560,7 @@ out:
 }
 EXPORT_SYMBOL_GPL(sk_clone_lock);
 
+/* TODO： 设置capacity ? */
 void sk_setup_caps(struct sock *sk, struct dst_entry *dst)
 {
 	__sk_dst_set(sk, dst);

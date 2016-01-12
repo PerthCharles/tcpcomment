@@ -109,6 +109,7 @@ static inline __u32 tcp_v4_init_sequence(const struct sk_buff *skb)
 					  tcp_hdr(skb)->source);
 }
 
+/* 返回1，表示这个tw socket使用的port能够被重用 */
 int tcp_twsk_unique(struct sock *sk, struct sock *sktw, void *twp)
 {
 	const struct tcp_timewait_sock *tcptw = tcp_twsk(sktw);
@@ -125,9 +126,12 @@ int tcp_twsk_unique(struct sock *sk, struct sock *sktw, void *twp)
 	   If TW bucket has been already destroyed we fall back to VJ's scheme
 	   and use initial timestamp retrieved from peer table.
 	 */
+    /* 如果tw socket已经收到了对端的FIN包，则ts_recent_stamp会被设置
+     * 如果已经间隔超过1s，则可以重用port */
 	if (tcptw->tw_ts_recent_stamp &&
 	    (twp == NULL || (sysctl_tcp_tw_reuse &&
 			     get_seconds() - tcptw->tw_ts_recent_stamp > 1))) {
+        /* 进一步调整write_seq，防止跟上一个连接overlap */
 		tp->write_seq = tcptw->tw_snd_nxt + 65535 + 2;
 		if (tp->write_seq == 0)
 			tp->write_seq = 1;
@@ -142,6 +146,7 @@ int tcp_twsk_unique(struct sock *sk, struct sock *sktw, void *twp)
 EXPORT_SYMBOL_GPL(tcp_twsk_unique);
 
 /* This will initiate an outgoing connection. */
+/* 发送一个TCP connect请求出去，即SYN包 */
 int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 {
 	struct sockaddr_in *usin = (struct sockaddr_in *)uaddr;
@@ -160,29 +165,37 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 	if (usin->sin_family != AF_INET)
 		return -EAFNOSUPPORT;
 
+    /* Route信息是通过source address 和 next hop address确定的，
+     * 默认的nexthop就是目的地址 */
 	nexthop = daddr = usin->sin_addr.s_addr;
 	inet_opt = rcu_dereference_protected(inet->inet_opt,
 					     sock_owned_by_user(sk));
 	if (inet_opt && inet_opt->opt.srr) {
 		if (!daddr)
 			return -EINVAL;
-		nexthop = inet_opt->opt.faddr;
+		nexthop = inet_opt->opt.faddr;  /* faddr表示first hop addr */
 	}
 
+    /* src port 即local port, 此时有可能还是未指定的状态 */
 	orig_sport = inet->inet_sport;
+    /* dst port 即connect()指定的remote port */
 	orig_dport = usin->sin_port;
+
 	fl4 = &inet->cork.fl.u.ip4;
+    /* 根据source address、nic interface、port等信息找到路由表 */
 	rt = ip_route_connect(fl4, nexthop, inet->inet_saddr,
 			      RT_CONN_FLAGS(sk), sk->sk_bound_dev_if,
 			      IPPROTO_TCP,
 			      orig_sport, orig_dport, sk, true);
 	if (IS_ERR(rt)) {
 		err = PTR_ERR(rt);
+        /* 返回目的地址不可达错误 */
 		if (err == -ENETUNREACH)
 			IP_INC_STATS_BH(sock_net(sk), IPSTATS_MIB_OUTNOROUTES);
 		return err;
 	}
 
+    /* 如果返回的route是多播或广播路由，则返回错误 */
 	if (rt->rt_flags & (RTCF_MULTICAST | RTCF_BROADCAST)) {
 		ip_rt_put(rt);
 		return -ENETUNREACH;
@@ -214,14 +227,16 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 	if (inet_opt)
 		inet_csk(sk)->icsk_ext_hdr_len = inet_opt->opt.optlen;
 
-	tp->rx_opt.mss_clamp = TCP_MSS_DEFAULT;
+	tp->rx_opt.mss_clamp = TCP_MSS_DEFAULT; /* 默认MSS： 536 */
 
 	/* Socket identity is still unknown (sport may be zero).
 	 * However we set state to SYN-SENT and not releasing socket
 	 * lock select source port, enter ourselves into the hash tables and
 	 * complete initialization after this.
 	 */
+    /* 先设置状态也没关系，sk处于被锁住的状态 */
 	tcp_set_state(sk, TCP_SYN_SENT);
+    /* 为sk bind一个port, 同时将sk放入到inet bind hashinfo中去 */
 	err = inet_hash_connect(&tcp_death_row, sk);
 	if (err)
 		goto failure;
@@ -237,6 +252,7 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 	sk->sk_gso_type = SKB_GSO_TCPV4;
 	sk_setup_caps(sk, &rt->dst);
 
+    /* connect阶段的write_seq就是ISN值 */
 	if (!tp->write_seq && likely(!tp->repair))
 		tp->write_seq = secure_tcp_sequence_number(inet->inet_saddr,
 							   inet->inet_daddr,
@@ -245,6 +261,7 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 
 	inet->inet_id = tp->write_seq ^ jiffies;
 
+    /* 具体的发送SYN包的处理函数 */
 	err = tcp_connect(sk);
 
 	rt = NULL;
@@ -2965,7 +2982,7 @@ struct proto tcp_prot = {
 	.name			= "TCP",
 	.owner			= THIS_MODULE,
 	.close			= tcp_close,
-	.connect		= tcp_v4_connect,
+	.connect		= tcp_v4_connect,       /* tcp对应的connect()处理函数 */
 	.disconnect		= tcp_disconnect,
 	.accept			= inet_csk_accept,      /* tcp对应的accept()处理函数 */
 	.ioctl			= tcp_ioctl,

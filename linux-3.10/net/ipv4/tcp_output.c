@@ -2872,6 +2872,7 @@ struct sk_buff *tcp_make_synack(struct sock *sk, struct dst_entry *dst,
 EXPORT_SYMBOL(tcp_make_synack);
 
 /* Do all connect socket setups that can be done AF independent. */
+/* 完成诸多tp connect时的初始化动作，如SYN包中的awnd大小，snd_una, snd_nxt */
 void tcp_connect_init(struct sock *sk)
 {
 	const struct dst_entry *dst = __sk_dst_get(sk);
@@ -2909,6 +2910,7 @@ void tcp_connect_init(struct sock *sk)
 	    (tp->window_clamp > tcp_full_space(sk) || tp->window_clamp == 0))
 		tp->window_clamp = tcp_full_space(sk);
 
+    /* TODO: 确定第一个awnd */
 	tcp_select_initial_window(tcp_full_space(sk),
 				  tp->advmss - (tp->rx_opt.ts_recent_stamp ? tp->tcp_header_len - sizeof(struct tcphdr) : 0),
 				  &tp->rcv_wnd,
@@ -2939,6 +2941,7 @@ void tcp_connect_init(struct sock *sk)
 	tcp_clear_retrans(tp);
 }
 
+/* 将skb挂到 write queue中去 */
 static void tcp_connect_queue_skb(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -3043,12 +3046,14 @@ done:
 }
 
 /* Build a SYN and send it off. */
+/* 发送第一个SYN包 */
 int tcp_connect(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *buff;
 	int err;
 
+    /* 准备工作 */
 	tcp_connect_init(sk);
 
 	if (unlikely(tp->repair)) {
@@ -3056,16 +3061,19 @@ int tcp_connect(struct sock *sk)
 		return 0;
 	}
 
+    /* 分配 skb */
 	buff = alloc_skb_fclone(MAX_TCP_HEADER + 15, sk->sk_allocation);
 	if (unlikely(buff == NULL))
 		return -ENOBUFS;
 
 	/* Reserve space for headers. */
+    /* 预留TCP、IP Link Layer的header空间 */
 	skb_reserve(buff, MAX_TCP_HEADER);
 
 	tcp_init_nondata_skb(buff, tp->write_seq++, TCPHDR_SYN);
     /* 记录发送SYN包的时间 */
 	tp->retrans_stamp = TCP_SKB_CB(buff)->when = tcp_time_stamp;
+    /* 将buff挂到sk的write queue中 */
 	tcp_connect_queue_skb(sk, buff);
 	TCP_ECN_send_syn(sk, buff);
 

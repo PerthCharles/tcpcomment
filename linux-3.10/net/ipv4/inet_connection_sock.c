@@ -939,6 +939,7 @@ EXPORT_SYMBOL_GPL(inet_csk_listen_start);
  *	This routine closes sockets which have been at least partially
  *	opened, but not yet accepted.
  */
+/* TODO: disconnect()的时候可能会调用 */
 void inet_csk_listen_stop(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);

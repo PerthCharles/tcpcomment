@@ -2236,6 +2236,7 @@ static inline bool tcp_need_reset(int state)
 		TCPF_FIN_WAIT2 | TCPF_SYN_RECV);
 }
 
+/* TODO: 有空也要了解一下这些个扫尾的动作具体是怎么做的 */
 int tcp_disconnect(struct sock *sk, int flags)
 {
 	struct inet_sock *inet = inet_sk(sk);

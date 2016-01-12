@@ -311,6 +311,7 @@ out:
 EXPORT_SYMBOL_GPL(__inet_lookup_established);
 
 /* called with local bh disabled */
+/* 检查某个通过connect()占用的端口，是否可以被重用 */
 static int __inet_check_established(struct inet_timewait_death_row *death_row,
 				    struct sock *sk, __u16 lport,
 				    struct inet_timewait_sock **twp)
@@ -335,6 +336,7 @@ static int __inet_check_established(struct inet_timewait_death_row *death_row,
 	spin_lock(lock);
 
 	/* Check TIME-WAIT sockets first. */
+    /* 先找tw socket，如果找到了，并且它已经收到过对端的fin超过1s, 则可以重用port */
 	sk_nulls_for_each(sk2, node, &head->twchain) {
 		if (sk2->sk_hash != hash)
 			continue;
@@ -482,6 +484,7 @@ void inet_unhash(struct sock *sk)
 }
 EXPORT_SYMBOL_GPL(inet_unhash);
 
+/* 分配一个port给connecting的socket */
 int __inet_hash_connect(struct inet_timewait_death_row *death_row,
 		struct sock *sk, u32 port_offset,
 		int (*check_established)(struct inet_timewait_death_row *,
@@ -496,9 +499,10 @@ int __inet_hash_connect(struct inet_timewait_death_row *death_row,
 	struct net *net = sock_net(sk);
 	int twrefcnt = 1;
 
+    /* connect()一般都不会设置snum */
 	if (!snum) {
 		int i, remaining, low, high, port;
-		static u32 hint;
+		static u32 hint;    /* hint是静态变量 */
 		u32 offset = hint + port_offset;
 		struct inet_timewait_sock *tw = NULL;
 
@@ -506,10 +510,13 @@ int __inet_hash_connect(struct inet_timewait_death_row *death_row,
 		remaining = (high - low) + 1;
 
 		local_bh_disable();
+        /* 遍历所有可用范围内的port */
 		for (i = 1; i <= remaining; i++) {
+            /* 从offset处开始匹配，性能考虑 */
 			port = low + (i + offset) % remaining;
 			if (inet_is_reserved_local_port(port))
 				continue;
+            /* 获取该port对应的bhash冲突链 */
 			head = &hinfo->bhash[inet_bhashfn(net, port,
 					hinfo->bhash_size)];
 			spin_lock(&head->lock);
@@ -519,12 +526,20 @@ int __inet_hash_connect(struct inet_timewait_death_row *death_row,
 			 * unique enough.
 			 */
 			inet_bind_bucket_for_each(tb, &head->chain) {
+                /* 如果找到了同一个net namespace下使用同一个port的bind bucket */
 				if (net_eq(ib_net(tb), net) &&
 				    tb->port == port) {
+                    /* 如果fastreuse大于等于0，则说明这个端口已经被某个socket使用着
+                     * 这里不管这个port是否能够reuse，都不再尝试这个port */
+                    /* 这里一个小trick: 通过connect占用的port，reuse标记为-1 */
 					if (tb->fastreuse >= 0 ||
 					    tb->fastreuseport >= 0)
 						goto next_port;
 					WARN_ON(hlist_empty(&tb->owners));
+                    /* 执行到这里说明fastreuse == -1，说明这个端口是被connect的socket占用的
+                     * 进一步检查established socket，看看能不能reuse port
+                     * reuse的条件： 
+                     *  1. tw socket已经收到对端的fin超过1s, 并且tw_recycle开启 */
 					if (!check_established(death_row, sk,
 								port, &tw))
 						goto ok;
@@ -532,12 +547,14 @@ int __inet_hash_connect(struct inet_timewait_death_row *death_row,
 				}
 			}
 
+            /* 创建一个新的bind bucket */
 			tb = inet_bind_bucket_create(hinfo->bind_bucket_cachep,
 					net, head, port);
 			if (!tb) {
 				spin_unlock(&head->lock);
 				break;
 			}
+            /* 设置reuse为-1，表示port被connect的socket的占用 */
 			tb->fastreuse = -1;
 			tb->fastreuseport = -1;
 			goto ok;
@@ -563,6 +580,7 @@ ok:
 		spin_unlock(&head->lock);
 
 		if (tw) {
+            /* 删除tw */
 			inet_twsk_deschedule(tw, death_row);
 			while (twrefcnt) {
 				twrefcnt--;
@@ -594,6 +612,8 @@ out:
 /*
  * Bind a port for a connect operation and hash it.
  */
+/* TODO： 看看这个复杂的函数
+ * TODO: 为什么server端bind的获取端口函数和该函数不能复用 ? */
 int inet_hash_connect(struct inet_timewait_death_row *death_row,
 		      struct sock *sk)
 {

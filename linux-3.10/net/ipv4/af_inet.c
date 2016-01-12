@@ -626,6 +626,7 @@ static long inet_wait_for_connect(struct sock *sk, long timeo, int writebias)
 	 * Connect() does not allow to get error notifications
 	 * without closing the socket.
 	 */
+    /* 一直尝试下去，直到SYN重传次数达到上限，sk_state被改变 */
 	while ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
 		release_sock(sk);
 		timeo = schedule_timeout(timeo);
@@ -650,6 +651,7 @@ int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 	int err;
 	long timeo;
 
+    /* 检查地址长度合法性 */
 	if (addr_len < sizeof(uaddr->sa_family))
 		return -EINVAL;
 
@@ -664,22 +666,26 @@ int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 		err = -EINVAL;
 		goto out;
 	case SS_CONNECTED:
-		err = -EISCONN;
+        /* connect()默认是blocking形式调用，
+         * TODO: 如果是non blocking形式，岂不是要靠这个错误码来知道连接建立完事了？ */
+		err = -EISCONN;     
 		goto out;
 	case SS_CONNECTING:
 		err = -EALREADY;
 		/* Fall out of switch with err, set for this state */
 		break;
-	case SS_UNCONNECTED:
+	case SS_UNCONNECTED:        /* 只有在UNCONNECTED状态才是合理的 */
 		err = -EISCONN;
+        /* 如果sk的状态不是close状态，也是不合理的 */
 		if (sk->sk_state != TCP_CLOSE)
 			goto out;
 
+        /* 对于TCP，是tcp_v4_connect(). 功能就是：发送一个SYN包出去 */
 		err = sk->sk_prot->connect(sk, uaddr, addr_len);
 		if (err < 0)
 			goto out;
 
-		sock->state = SS_CONNECTING;
+		sock->state = SS_CONNECTING;    /* 将状态设置为connecting状态，没事执行到这里BSD socket一直上着锁 */
 
 		/* Just entered SS_CONNECTING state; the only
 		 * difference is that return value in non-blocking
@@ -689,14 +695,20 @@ int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 		break;
 	}
 
+    /* 如果是blocking形式，则返回sk_sndtimeo；否则返回0 */
 	timeo = sock_sndtimeo(sk, flags & O_NONBLOCK);
 
+    /* 一般情况下，执行到这里应该sk状态是SYN_SENT了，同时也有很低概率是SYN_RECV(双方同时建联) */
 	if ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
 		int writebias = (sk->sk_protocol == IPPROTO_TCP) &&
 				tcp_sk(sk)->fastopen_req &&
 				tcp_sk(sk)->fastopen_req->data ? 1 : 0;
 
 		/* Error code is set above */
+        /* inet_wait_for_connect() 返回的条件
+         * a. timeo超时了，或者
+         * b. 进程收到了类似ctrl-c的信号, 或者
+         * c. sk状态不是syn sent或syn recv了 */
 		if (!timeo || !inet_wait_for_connect(sk, timeo, writebias))
 			goto out;
 
@@ -708,6 +720,7 @@ int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 	/* Connection was closed by RST, timeout, ICMP error
 	 * or another process disconnected us.
 	 */
+    /* 比如SYN重传次数达到上限 */
 	if (sk->sk_state == TCP_CLOSE)
 		goto sock_error;
 
@@ -716,6 +729,7 @@ int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 	 * Hence, it is handled normally after connect() return successfully.
 	 */
 
+    /* 执行到此，说明连接建立完成 */
 	sock->state = SS_CONNECTED;
 	err = 0;
 out:
@@ -724,17 +738,20 @@ out:
 sock_error:
 	err = sock_error(sk) ? : -ECONNABORTED;
 	sock->state = SS_UNCONNECTED;
+    /* disconnect()进行扫尾，对于TCP是tcp_disconnect() */
 	if (sk->sk_prot->disconnect(sk, flags))
 		sock->state = SS_DISCONNECTING;
 	goto out;
 }
 EXPORT_SYMBOL(__inet_stream_connect);
 
+/* TCP协议的connect处理函数 */
 int inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 			int addr_len, int flags)
 {
 	int err;
 
+    /* 整个链接过程都要锁住sk */
 	lock_sock(sock->sk);
 	err = __inet_stream_connect(sock, uaddr, addr_len, flags);
 	release_sock(sock->sk);
