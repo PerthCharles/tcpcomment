@@ -259,6 +259,7 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 							   inet->inet_sport,
 							   usin->sin_port);
 
+    /* packet id是根据ISN和系统时间确定的 ! */
 	inet->inet_id = tp->write_seq ^ jiffies;
 
     /* 具体的发送SYN包的处理函数 */

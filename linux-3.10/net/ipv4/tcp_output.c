@@ -2950,8 +2950,9 @@ static void tcp_connect_queue_skb(struct sock *sk, struct sk_buff *skb)
 	tcb->end_seq += skb->len;
 	skb_header_release(skb);
 	__tcp_add_write_queue_tail(sk, skb);
-	sk->sk_wmem_queued += skb->truesize;
-	sk_mem_charge(sk, skb->truesize);
+    /* truesize包括： skb struct size + skb data */
+	sk->sk_wmem_queued += skb->truesize;    /* sk_wmem_queued记录write queue中分配了多少内存 */
+	sk_mem_charge(sk, skb->truesize);       /* 将forward alloc的空间减去skb的truesize */
 	tp->write_seq = tcb->end_seq;
 	tp->packets_out += tcp_skb_pcount(skb);
 }
