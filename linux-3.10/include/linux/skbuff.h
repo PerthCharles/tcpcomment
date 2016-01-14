@@ -402,16 +402,23 @@ typedef unsigned char *sk_buff_data_t;
  *	@truesize: Buffer size
  *	@users: User count - see {datagram,tcp}.c
  */
-
+/* sk_buff是整个TCP/IP协议栈用于表示和存储一个数据包的最重要的数据结构 */
+/* sk_buff结构体实际包含三个部分：
+ *     1. sk_buff structure, which is also referred to as a sk_buffer header 
+ *     2. Linear data block containing data
+ *     3. Nonlinear data portion represented by struct skb_shared_info
+ */
+/* TODO： 区分sk_buff中的linear data buffer 和 nonlinear data */
 struct sk_buff {
 	/* These two members must be first. */
+    /* 用于将相关的skb关联起来，比如数据包分段后的skb需要关联在一块 */
 	struct sk_buff		*next;
 	struct sk_buff		*prev;
 
-	ktime_t			tstamp;
+	ktime_t			tstamp;     /* skb的接收时间、或发送时间 */
 
-	struct sock		*sk;
-	struct net_device	*dev;
+	struct sock		*sk;        /* 指向这个skb属于哪一个sk */
+	struct net_device	*dev;   /* 这个skb经过哪个nic收到的、或者将要从哪个nic离开 */
 
 	/*
 	 * This is the control buffer. It is free to use for every
