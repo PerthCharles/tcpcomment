@@ -153,12 +153,13 @@ struct sk_buff;
 typedef struct skb_frag_struct skb_frag_t;
 
 struct skb_frag_struct {
+    /* A pointer to the page structure containing paged data for the fragment */
 	struct {
 		struct page *p;
 	} page;
 #if (BITS_PER_LONG > 32) || (PAGE_SIZE >= 65536)
-	__u32 page_offset;
-	__u32 size;
+	__u32 page_offset;  /* 指向page中，数据的起始位置 */
+	__u32 size;         /* 被该page包含的数据区域的大小 */
 #else
 	__u16 page_offset;
 	__u16 size;
@@ -257,8 +258,11 @@ struct ubuf_info {
 /* This data is invariant across clones and lives at
  * the end of the header data, ie. at skb->end.
  */
+/* 这部分的数据是被cloned的skb共享的, 即ADI书中讲的nonlinear-data area */
+/* 这部分的空间紧接着skb->end */
+/* 关于frags数组区域的结构和frag_list区域的结构，在figure目录下有对应的图标帮助理解 */
 struct skb_shared_info {
-	unsigned char	nr_frags;
+	unsigned char	nr_frags;       /* 该shared部分，有多少个分片。 表明最后frags[]数组的实际大小 */
 	__u8		tx_flags;
 	unsigned short	gso_size;       /* 每个数据段的大小 */
 	/* Warning: this field is not always filled in (UFO)! */
@@ -271,14 +275,15 @@ struct skb_shared_info {
 	/*
 	 * Warning : all fields before dataref are cleared in __alloc_skb()
 	 */
-	atomic_t	dataref;
+	atomic_t	dataref;    /* 记录该shared部分被多少个人占用，原子类型 */
 
 	/* Intermediate layers must ensure that destructor_arg
 	 * remains valid until skb destructor */
 	void *		destructor_arg;
 
 	/* must be last field, see pskb_expand_head() */
-	skb_frag_t	frags[MAX_SKB_FRAGS];
+    /* 只有在DMA支持scatter-gather功能的时候，才能使用paged data area */
+	skb_frag_t	frags[MAX_SKB_FRAGS];   /* 用于存储指向(属于该skb的page)的指针 */
 };
 
 /* We divide dataref into two halves.  The higher 16 bits hold references
@@ -409,6 +414,8 @@ typedef unsigned char *sk_buff_data_t;
  *     3. Nonlinear data portion represented by struct skb_shared_info
  */
 /* TODO： 区分sk_buff中的linear data buffer 和 nonlinear data */
+/* ADI书中的图5.4 Paged data area organization for sk_buff非常明了的说明了linear data和nonlinear data的区别
+ * 同时也非常明确的展现了skb->len skb->data_len 和skb->truesize的不同 */
 struct sk_buff {
 	/* These two members must be first. */
     /* 用于将相关的skb关联起来，比如数据包分段后的skb需要关联在一块 */
@@ -426,16 +433,18 @@ struct sk_buff {
 	 * want to keep them across layers you have to do a skb_clone()
 	 * first. This is owned by whoever has the skb queued ATM.
 	 */
+    /* 各层用于存放控制信息的地方，如tcp层就将该区域映射成为struct tcp_skb_cb */
 	char			cb[48] __aligned(8);
 
-	unsigned long		_skb_refdst;
+	unsigned long		_skb_refdst;    /* 目的路由的索引值, 对应的路由一般包括pmtu、rtt等信息 */
 #ifdef CONFIG_XFRM
 	struct	sec_path	*sp;
 #endif
-	unsigned int		len,
-				data_len;
-	__u16			mac_len,
-				hdr_len;
+	unsigned int		len,            /* 整个skb"数据区域"的长度, 包括linear-area和nonlinear-area */
+				data_len;               /* 如果有nonlinear-area，该值表示nonlinear-area的大小 */
+	__u16			mac_len,            /* link layer的头部长度 */
+				hdr_len;                /* TODO: 为各个协议头部预留的长度 ? */
+    /* 处理到协议栈的那一层，该值就代表对应曾的checksum */
 	union {
 		__wsum		csum;
 		struct {
@@ -443,11 +452,11 @@ struct sk_buff {
 			__u16	csum_offset;
 		};
 	};
-	__u32			priority;
+	__u32			priority;           /* packet在队列中的优先级 */
 	kmemcheck_bitfield_begin(flags1);
-	__u8			local_df:1,
-				cloned:1,
-				ip_summed:2,
+	__u8			local_df:1,         /* 是否允许 local data fragmentation */
+				cloned:1,               /* 标记该sk_buff是否是被clone的 */
+				ip_summed:2,            /* 标记硬件是否计算好了checksum */
 				nohdr:1,
 				nfctinfo:3;
 	__u8			pkt_type:3,
@@ -469,7 +478,7 @@ struct sk_buff {
 	struct nf_bridge_info	*nf_bridge;
 #endif
 
-	int			skb_iif;
+	int			skb_iif;        /* skb从哪个net_device收到的， in ifindex */
 
 	__u32			rxhash;
 
@@ -516,6 +525,7 @@ struct sk_buff {
 		__u32		reserved_tailroom;
 	};
 
+    /* 各层的头部位置  TODO：inner的encapsulation具体是什么含义 ? */
 	sk_buff_data_t		inner_transport_header;
 	sk_buff_data_t		inner_network_header;
 	sk_buff_data_t		inner_mac_header;
@@ -523,12 +533,16 @@ struct sk_buff {
 	sk_buff_data_t		network_header;
 	sk_buff_data_t		mac_header;
 	/* These elements must be at the end, see alloc_skb() for details.  */
-	sk_buff_data_t		tail;
-	sk_buff_data_t		end;
-	unsigned char		*head,
-				*data;
-	unsigned int		truesize;
-	atomic_t		users;
+    /* [head, end]表示的分配的内存大小空间
+     * [data, tail]表示数据实际使用的内存区域，该区域一定是[head, tail]的子集
+     * 这两组指针都只负责操作linear data area
+     */
+	sk_buff_data_t		tail;   /* 指向linear-data area 实际数据结束的位置，该位置可能与end不同 */
+	sk_buff_data_t		end;    /* 指向linear-data area "分配"的最后一个字节 */
+	unsigned char		*head,  /* 指向linear-data area "分配"的第一个字节 */
+				*data;          /* 指向linear-data area 真实数据开始的位置，该位置可能与head不同 */
+	unsigned int		truesize;   /* sizeof(sturct sk_buff) + 为数据分配的空间[head, tail] */
+	atomic_t		users;      /* users counter */
 };
 
 #ifdef __KERNEL__
@@ -647,6 +661,7 @@ extern bool skb_try_coalesce(struct sk_buff *to, struct sk_buff *from,
 extern struct sk_buff *__alloc_skb(unsigned int size,
 				   gfp_t priority, int flags, int node);
 extern struct sk_buff *build_skb(void *data, unsigned int frag_size);
+/* 分配一个skb结构体 */
 static inline struct sk_buff *alloc_skb(unsigned int size,
 					gfp_t priority)
 {
@@ -726,6 +741,7 @@ static inline __u32 skb_get_rxhash(struct sk_buff *skb)
 }
 
 #ifdef NET_SKBUFF_DATA_USES_OFFSET
+/* 根据end偏移，得到实际意义上的end pointer */
 static inline unsigned char *skb_end_pointer(const struct sk_buff *skb)
 {
 	return skb->head + skb->end;
@@ -1385,9 +1401,11 @@ static inline unsigned char *skb_tail_pointer(const struct sk_buff *skb)
 	return skb->head + skb->tail;
 }
 
+/* 可以看出tail其实并不是一个指针，而是表示tail位置与sk_buff分配的内存空间其实位置head之间的偏移量
+ * (skb->head + skb->tail) 才是真正意义上的指向实际data区域的尾部 */
 static inline void skb_reset_tail_pointer(struct sk_buff *skb)
 {
-	skb->tail = skb->data - skb->head;
+	skb->tail = skb->data - skb->head;  
 }
 
 static inline void skb_set_tail_pointer(struct sk_buff *skb, const int offset)

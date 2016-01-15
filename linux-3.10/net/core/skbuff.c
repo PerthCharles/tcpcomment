@@ -223,6 +223,9 @@ out:
  *	Buffers may only be allocated from interrupts using a @gfp_mask of
  *	%GFP_ATOMIC.
  */
+/* TODO：
+ * size表示的是linear-data area的大小 
+ * 分配后的效果是[head, end]的区间大小是size， 而data和"tail"指针都默认指向head的位置 */
 struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 			    int flags, int node)
 {
@@ -273,6 +276,7 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	atomic_set(&skb->users, 1);
 	skb->head = data;
 	skb->data = data;
+    /* tail和end本质上都不是直接的指针，而是相对于skb->head的偏移量 */
 	skb_reset_tail_pointer(skb);
 	skb->end = skb->tail + size;
 #ifdef NET_SKBUFF_DATA_USES_OFFSET
@@ -3437,6 +3441,7 @@ EXPORT_SYMBOL(kfree_skb_partial);
  * @fragstolen: pointer to boolean
  * @delta_truesize: how much more was allocated than was requested
  */
+/* 将两个skb合并，典型场景： ip层收完一个ip数据包后，将所有的分片进行合并时需要调用skb_try_coalesce */
 bool skb_try_coalesce(struct sk_buff *to, struct sk_buff *from,
 		      bool *fragstolen, int *delta_truesize)
 {

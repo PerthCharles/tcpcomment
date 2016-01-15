@@ -513,7 +513,7 @@ err:
 
 
 /* Build a new IP datagram from all its fragments. */
-
+/* 感觉是ip fragment re-assemble 的缩写 */
 static int ip_frag_reasm(struct ipq *qp, struct sk_buff *prev,
 			 struct net_device *dev)
 {
