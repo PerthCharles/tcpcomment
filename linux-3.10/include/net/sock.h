@@ -1372,6 +1372,7 @@ static inline bool sk_has_account(struct sock *sk)
 	return !!sk->sk_prot->memory_allocated;
 }
 
+/* 功能应该是判断wmem是否超过上限 */
 static inline bool sk_wmem_schedule(struct sock *sk, int size)
 {
 	if (!sk_has_account(sk))

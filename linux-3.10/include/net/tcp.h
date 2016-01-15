@@ -52,6 +52,8 @@ extern struct inet_hashinfo tcp_hashinfo;
 extern struct percpu_counter tcp_orphan_count;
 extern void tcp_time_wait(struct sock *sk, int state, int timeo);
 
+/* MAX_HEADER表示link layer的最大头长度, 那这个128是怎么来的呢？
+ * TODO: TCP层的最大长度是60B，IP层的最大长度也是60B，为什么冒出来个128 ？ */
 #define MAX_TCP_HEADER	(128 + MAX_HEADER)
 #define MAX_TCP_OPTION_SPACE 40
 

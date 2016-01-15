@@ -522,7 +522,7 @@ struct sk_buff {
 	union {
 		__u32		mark;
 		__u32		dropcount;
-		__u32		reserved_tailroom;
+		__u32		reserved_tailroom;  /* [tail, end]区域的大小 */
 	};
 
     /* 各层的头部位置  TODO：inner的encapsulation具体是什么含义 ? */
@@ -661,6 +661,7 @@ extern bool skb_try_coalesce(struct sk_buff *to, struct sk_buff *from,
 extern struct sk_buff *__alloc_skb(unsigned int size,
 				   gfp_t priority, int flags, int node);
 extern struct sk_buff *build_skb(void *data, unsigned int frag_size);
+
 /* 分配一个skb结构体 */
 static inline struct sk_buff *alloc_skb(unsigned int size,
 					gfp_t priority)
@@ -1535,6 +1536,9 @@ static inline int skb_availroom(const struct sk_buff *skb)
  *	Increase the headroom of an empty &sk_buff by reducing the tail
  *	room. This is only allowed for an empty buffer.
  */
+/* 典型用途：为各个协议的头部预留空间 */
+/* When we are constructing a packet, we reserve the maximum length that could
+ * be occupied by the protocol headers as headroom(即[head, data]) */
 static inline void skb_reserve(struct sk_buff *skb, int len)
 {
 	skb->data += len;

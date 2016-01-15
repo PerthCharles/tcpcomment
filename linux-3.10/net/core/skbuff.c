@@ -223,8 +223,7 @@ out:
  *	Buffers may only be allocated from interrupts using a @gfp_mask of
  *	%GFP_ATOMIC.
  */
-/* TODO：
- * size表示的是linear-data area的大小 
+/* size表示的是linear-data area的大小 
  * 分配后的效果是[head, end]的区间大小是size， 而data和"tail"指针都默认指向head的位置 */
 struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 			    int flags, int node)
@@ -242,6 +241,7 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 		gfp_mask |= __GFP_MEMALLOC;
 
 	/* Get the HEAD */
+    /* 从slab内存区域获取一个可用的node, TODO：读读slab实现 */
 	skb = kmem_cache_alloc_node(cache, gfp_mask & ~__GFP_DMA, node);
 	if (!skb)
 		goto out;
@@ -252,7 +252,9 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	 * aligned memory blocks, unless SLUB/SLAB debug is enabled.
 	 * Both skb->head and skb_shared_info are cache line aligned.
 	 */
+    /* 将SKB linear-data area的大小进行cache line对齐 */
 	size = SKB_DATA_ALIGN(size);
+    /* 在加上struct skb_shared_info结构体的大小: 这部分从应用层来看就是开销 */
 	size += SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
 	data = kmalloc_reserve(size, gfp_mask, node, &pfmemalloc);
 	if (!data)
@@ -261,6 +263,7 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	 * Put skb_shared_info exactly at the end of allocated zone,
 	 * to allow max possible filling before reallocation.
 	 */
+    /* 这里又重新减去了struct skb_shared_info的大小，重新回到用于存放数据的大小 */
 	size = SKB_WITH_OVERHEAD(ksize(data));
 	prefetchw(data + size);
 
@@ -269,24 +272,34 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	 * actually initialise below. Hence, don't put any more fields after
 	 * the tail pointer in struct sk_buff!
 	 */
+    /* 将tail之前的东西清零 */
 	memset(skb, 0, offsetof(struct sk_buff, tail));
 	/* Account for allocated memory : skb + skb->head */
+    /* skb的内存开销分为三个部分： 
+     *  1. struct sk_buff结构体部分
+     *  2. struct skb_shared_info部分
+     *  3. 存放有效数据的区域大小
+     * SKB_TRUESIZE(size) 返回的就是skb的全部的内存开销值
+     */
 	skb->truesize = SKB_TRUESIZE(size);
 	skb->pfmemalloc = pfmemalloc;
 	atomic_set(&skb->users, 1);
-	skb->head = data;
-	skb->data = data;
+	skb->head = data;   /* head指向分配的linear-data area的起始位置 */
+	skb->data = data;   /* 暂时还没有存放数据，所以data也指向head相同的位置 */
     /* tail和end本质上都不是直接的指针，而是相对于skb->head的偏移量 */
 	skb_reset_tail_pointer(skb);
-	skb->end = skb->tail + size;
+	skb->end = skb->tail + size;    /* end指向分配linear-data area的结束位置 */
 #ifdef NET_SKBUFF_DATA_USES_OFFSET
 	skb->mac_header = ~0U;
 	skb->transport_header = ~0U;
 #endif
 
 	/* make sure we initialize shinfo sequentially */
+    /* 指向struct skb_shared_info结构体的起始位置 */
+    /* 可见share区域可能存在的paged area和 frag area在skb刚创建时，都是没有分配内存的 */
 	shinfo = skb_shinfo(skb);
 	memset(shinfo, 0, offsetof(struct skb_shared_info, dataref));
+    /* share区域引用计数器置1 */
 	atomic_set(&shinfo->dataref, 1);
 	kmemcheck_annotate_variable(shinfo->destructor_arg);
 

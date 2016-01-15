@@ -754,6 +754,7 @@ ssize_t tcp_splice_read(struct socket *sock, loff_t *ppos,
 }
 EXPORT_SYMBOL(tcp_splice_read);
 
+/* TCP协议分配一个skb块 */
 struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp)
 {
 	struct sk_buff *skb;
@@ -761,9 +762,12 @@ struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp)
 	/* The TCP header must be at least 32-bit aligned.  */
 	size = ALIGN(size, 4);
 
+    /* 以SKB_ALLOC_FCLONE模式分配一个SKB */
 	skb = alloc_skb_fclone(size + sk->sk_prot->max_header, gfp);
 	if (skb) {
+        /* TODO: wmem schedule具体是在干嘛 */
 		if (sk_wmem_schedule(sk, skb->truesize)) {
+            /* 预留TCP协议最大的头部，其实还包括ip头和链路头 */
 			skb_reserve(skb, sk->sk_prot->max_header);
 			/*
 			 * Make sure that we have exactly size bytes
