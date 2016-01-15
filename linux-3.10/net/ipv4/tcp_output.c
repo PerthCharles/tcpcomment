@@ -2634,14 +2634,18 @@ begin_fwd:
 		} else {
 			last_lost = TCP_SKB_CB(skb)->end_seq;
 			if (icsk->icsk_ca_state != TCP_CA_Loss)
+                /* 快速重传"成功"次数*/
 				mib_idx = LINUX_MIB_TCPFASTRETRANS;
 			else
+                /* 超时之后，在慢启动阶段"成功"重传次数 */
 				mib_idx = LINUX_MIB_TCPSLOWSTARTRETRANS;
 		}
 
 		if (sacked & (TCPCB_SACKED_ACKED|TCPCB_SACKED_RETRANS))
 			continue;
 
+        /* 如果重传失败，则增加retrans fail计数器；
+         * 否则根据重传类型，增加对应计数器： 快速重传 或者是 超时之后的慢启动重传 */
 		if (tcp_retransmit_skb(sk, skb)) {
 			NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPRETRANSFAIL);
 			return;
