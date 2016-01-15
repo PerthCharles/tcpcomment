@@ -1033,6 +1033,7 @@ static inline __sum16 __tcp_checksum_complete(struct sk_buff *skb)
 
 static inline bool tcp_checksum_complete(struct sk_buff *skb)
 {
+    /* 如果需要计算csum, 则计算包含伪头部的checksum */
 	return !skb_csum_unnecessary(skb) &&
 		__tcp_checksum_complete(skb);
 }

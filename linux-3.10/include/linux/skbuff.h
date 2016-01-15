@@ -2680,6 +2680,8 @@ void skb_complete_wifi_ack(struct sk_buff *skb, bool acked);
 extern __sum16 __skb_checksum_complete_head(struct sk_buff *skb, int len);
 extern __sum16 __skb_checksum_complete(struct sk_buff *skb);
 
+/* 如果标记为了不需要计算checksum, 那么就放弃计算 
+ * 典型案例：从lo设备走的数据包会被设置该标记 */
 static inline int skb_csum_unnecessary(const struct sk_buff *skb)
 {
 	return skb->ip_summed & CHECKSUM_UNNECESSARY;
@@ -2689,6 +2691,7 @@ static inline int skb_csum_unnecessary(const struct sk_buff *skb)
  *	skb_checksum_complete - Calculate checksum of an entire packet
  *	@skb: packet to process
  *
+ *  skb->csum的一个作用：用于支持pseudo header的checksum计算
  *	This function calculates the checksum over the entire packet plus
  *	the value of skb->csum.  The latter can be used to supply the
  *	checksum of a pseudo header as used by TCP/UDP.  It returns the
@@ -2703,7 +2706,7 @@ static inline int skb_csum_unnecessary(const struct sk_buff *skb)
  */
 static inline __sum16 skb_checksum_complete(struct sk_buff *skb)
 {
-    /* 如果硬件已经检查过skb的checksum，则直接返回0(表示checksum正确) */
+    /* 如果不需要再检查csum, 则直接返回0； 否则计算checksum */
 	return skb_csum_unnecessary(skb) ?
 	       0 : __skb_checksum_complete(skb);
 }

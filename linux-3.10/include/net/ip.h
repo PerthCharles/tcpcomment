@@ -237,6 +237,7 @@ static inline bool ip_is_fragment(const struct iphdr *iph)
 
 /* The function in 2.2 was invalid, producing wrong result for
  * check=0xFEFF. It was noticed by Arthur Skawina _year_ ago. --ANK(000625) */
+/* 递减ip->ttl，同时更新checksum */
 static inline
 int ip_decrease_ttl(struct iphdr *iph)
 {

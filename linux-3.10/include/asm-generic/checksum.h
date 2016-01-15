@@ -50,11 +50,15 @@ extern __sum16 ip_fast_csum(const void *iph, unsigned int ihl);
 /*
  * Fold a partial checksum
  */
+/* 将32位的checksum，折叠成16位的累加和 */
 static inline __sum16 csum_fold(__wsum csum)
 {
 	u32 sum = (__force u32)csum;
+    /* 高16位与低16位相加 */
 	sum = (sum & 0xffff) + (sum >> 16);
+    /* 如果溢出了(有进位)，那么也要累加进入sum */
 	sum = (sum & 0xffff) + (sum >> 16);
+    /* 取反 */
 	return (__force __sum16)~sum;
 }
 #endif

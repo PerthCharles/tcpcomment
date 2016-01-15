@@ -158,6 +158,7 @@ csum_partial_copy_from_user(const void __user *src, void *dst, int len,
 {
 	int missing;
 
+    /* 将数据从用户态拷贝到内核态 */
 	missing = __copy_from_user(dst, src, len);
 	if (missing) {
 		memset(dst + len - missing, 0, missing);
@@ -165,6 +166,7 @@ csum_partial_copy_from_user(const void __user *src, void *dst, int len,
 	} else
 		*csum_err = 0;
 
+    /* 计算用户数据的校验和 */
 	return csum_partial(dst, len, sum);
 }
 EXPORT_SYMBOL(csum_partial_copy_from_user);
@@ -195,7 +197,7 @@ __wsum csum_tcpudp_nofold(__be32 saddr, __be32 daddr,
 #else
 	s += (proto + len) << 8;
 #endif
-	s += (s >> 32);
+	s += (s >> 32);     /* 如果有进位，则进行累加 */
 	return (__force __wsum)s;
 }
 EXPORT_SYMBOL(csum_tcpudp_nofold);

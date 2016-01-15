@@ -1952,26 +1952,29 @@ fault:
 EXPORT_SYMBOL(skb_store_bits);
 
 /* Checksum skb data. */
-
 __wsum skb_checksum(const struct sk_buff *skb, int offset,
 			  int len, __wsum csum)
 {
-	int start = skb_headlen(skb);
+	int start = skb_headlen(skb);   /* 线性区域长度 */
 	int i, copy = start - offset;
 	struct sk_buff *frag_iter;
 	int pos = 0;
 
 	/* Checksum header. */
+    /* copy > 0, 说明offset在线性区域中 */
 	if (copy > 0) {
+        /* 不能超过指定的检验长度 */
 		if (copy > len)
 			copy = len;
+        /* "增加"计算从offset位置开始的数组的checksum */
 		csum = csum_partial(skb->data + offset, copy, csum);
 		if ((len -= copy) == 0)
 			return csum;
-		offset += copy;
-		pos	= copy;
+		offset += copy;     /* 接下来从这里继续处理 */
+		pos	= copy;         /* 已经处理数据长度 */
 	}
 
+    /* 累加SKB的paged data的校验和 */
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
 		int end;
 		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
@@ -1985,9 +1988,11 @@ __wsum skb_checksum(const struct sk_buff *skb, int offset,
 
 			if (copy > len)
 				copy = len;
+            /* 将物理页映射到内核空间 */
 			vaddr = kmap_atomic(skb_frag_page(frag));
 			csum2 = csum_partial(vaddr + frag->page_offset +
 					     offset - start, copy, 0);
+            /* 解除映射 */
 			kunmap_atomic(vaddr);
 			csum = csum_block_add(csum, csum2, pos);
 			if (!(len -= copy))
@@ -1998,6 +2003,7 @@ __wsum skb_checksum(const struct sk_buff *skb, int offset,
 		start = end;
 	}
 
+    /* skb还有可能被分片了，继续计算这部分的checksum */
 	skb_walk_frags(skb, frag_iter) {
 		int end;
 

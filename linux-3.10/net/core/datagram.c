@@ -657,12 +657,14 @@ fault:
 	return -EFAULT;
 }
 
+/* 返回0，表示checksum通过校验 */
 __sum16 __skb_checksum_complete_head(struct sk_buff *skb, int len)
 {
 	__sum16 sum;
 
 	sum = csum_fold(skb_checksum(skb, 0, len, skb->csum));
 	if (likely(!sum)) {
+        /* 如果软件检测成功，而硬件检测失败，说明硬件检测有错误 */
 		if (unlikely(skb->ip_summed == CHECKSUM_COMPLETE))
 			netdev_rx_csum_fault(skb->dev);
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
@@ -671,6 +673,7 @@ __sum16 __skb_checksum_complete_head(struct sk_buff *skb, int len)
 }
 EXPORT_SYMBOL(__skb_checksum_complete_head);
 
+/* 完成skb的校验 */
 __sum16 __skb_checksum_complete(struct sk_buff *skb)
 {
 	return __skb_checksum_complete_head(skb, skb->len);

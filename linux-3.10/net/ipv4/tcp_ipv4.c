@@ -573,10 +573,16 @@ static void __tcp_v4_send_check(struct sk_buff *skb,
 	struct tcphdr *th = tcp_hdr(skb);
 
 	if (skb->ip_summed == CHECKSUM_PARTIAL) {
+        /* 只计算伪首部，
+         * TCP报头和TCP数据的累加有硬件完成 */
 		th->check = ~tcp_v4_check(skb->len, saddr, daddr, 0);
+        /* 指向TCP报头位置，从该位置开始交由硬件负责计算 */
 		skb->csum_start = skb_transport_header(skb) - skb->head;
-		skb->csum_offset = offsetof(struct tcphdr, check);
+		skb->csum_offset = offsetof(struct tcphdr, check);      /* 检验和在TCP首部的偏移 */
 	} else {
+        /* 如果硬件不支持计算checksum, 则只好软件来做 */
+        /* skb->csum是已经计算好的data部分的checksum
+         * csum_partial()调用后就算出了TCP头部加TCP数据的csum */
 		th->check = tcp_v4_check(skb->len, saddr, daddr,
 					 csum_partial(th,
 						      th->doff << 2,
@@ -1870,7 +1876,10 @@ static __sum16 tcp_v4_checksum_init(struct sk_buff *skb)
 {
 	const struct iphdr *iph = ip_hdr(skb);
 
+    /* 如果TCP报头、TCP数据的反码累加已经由硬件完成 */
 	if (skb->ip_summed == CHECKSUM_COMPLETE) {
+        /* 现在只需要再累加上伪首部，取反获取最终的校验和
+         * 函数返回0表示通过检查 */
 		if (!tcp_v4_check(skb->len, iph->saddr,
 				  iph->daddr, skb->csum)) {
 			skb->ip_summed = CHECKSUM_UNNECESSARY;
@@ -1878,9 +1887,13 @@ static __sum16 tcp_v4_checksum_init(struct sk_buff *skb)
 		}
 	}
 
+    /* 生成包含伪头部的累加和 */
+    /* 伪头部包括：src ip, dst ip, len, proto type */
 	skb->csum = csum_tcpudp_nofold(iph->saddr, iph->daddr,
 				       skb->len, IPPROTO_TCP, 0);
 
+    /* 对于长度小于76字节的小包，接着累加TCP报头和报文，完成校验；
+     * 否则，以后再完成校验 */
 	if (skb->len <= 76) {
 		return __skb_checksum_complete(skb);
 	}
