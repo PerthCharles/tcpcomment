@@ -375,9 +375,12 @@ packet_routed:
 		goto no_route;
 
 	/* OK, we know where to send it, allocate and build IP header. */
+    /* 预留ip层头部的空间 */
 	skb_push(skb, sizeof(struct iphdr) + (inet_opt ? inet_opt->opt.optlen : 0));
+    /* 设置IP层头部在skb中的位置 */
 	skb_reset_network_header(skb);
 	iph = ip_hdr(skb);
+    /*      前两个字节       Version = 4, IHL = 5, tos */
 	*((__be16 *)iph) = htons((4 << 12) | (5 << 8) | (inet->tos & 0xff));
 	if (ip_dont_fragment(sk, &rt->dst) && !skb->local_df)
 		iph->frag_off = htons(IP_DF);
@@ -389,6 +392,7 @@ packet_routed:
 
 	/* Transport layer set skb->h.foo itself. */
 
+    /* 如果有IP头选项，则增加ihl (ip header length) */
 	if (inet_opt && inet_opt->opt.optlen) {
 		iph->ihl += inet_opt->opt.optlen >> 2;
 		ip_options_build(skb, &inet_opt->opt, inet->inet_daddr, rt, 0);

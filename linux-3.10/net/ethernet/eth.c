@@ -79,6 +79,7 @@ int eth_header(struct sk_buff *skb, struct net_device *dev,
 	       unsigned short type,
 	       const void *daddr, const void *saddr, unsigned int len)
 {
+    /* skb预留ETH_HLEN长度，并返回header所在指针, L2的头部长度为14B */
 	struct ethhdr *eth = (struct ethhdr *)skb_push(skb, ETH_HLEN);
 
 	if (type != ETH_P_802_3 && type != ETH_P_802_2)
@@ -158,7 +159,9 @@ __be16 eth_type_trans(struct sk_buff *skb, struct net_device *dev)
 {
 	struct ethhdr *eth;
 
+    /* 设置skb从哪个dev收到的 */
 	skb->dev = dev;
+    /* 处理掉skb中L2层(link layer)的头部 */
 	skb_reset_mac_header(skb);
 	skb_pull_inline(skb, ETH_HLEN);
 	eth = eth_hdr(skb);

@@ -713,7 +713,7 @@ struct tcp_skb_cb {
      * 2. when + rto值等于要进行超时重传的时间
      */
 	__u32		when;		/* used to compute rtt's	*/
-	__u8		tcp_flags;	/* TCP header flags. (tcp[13])	*/
+	__u8		tcp_flags;	/* TCP header flags. (tcp[13]) 用于填写TCP包头的flag域	*/
 
 	__u8		sacked;		/* State flags for SACK/FACK.	*/
 #define TCPCB_SACKED_ACKED	0x01	/* SKB ACK'd by a SACK block	*/

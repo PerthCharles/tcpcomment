@@ -101,6 +101,7 @@ extern void netdev_set_default_ethtool_ops(struct net_device *dev,
 /* NET_XMIT_CN is special. It does not guarantee that this packet is lost. It
  * indicates that the device will soon be dropping packets, or already drops
  * some packets of the same priority; prompting us to send less aggressively. */
+/* 由于NET_XMIT_CN错误并不是真的丢数据包了，所以要特殊处理 */
 #define net_xmit_eval(e)	((e) == NET_XMIT_CN ? 0 : (e))
 #define net_xmit_errno(e)	((e) != NET_XMIT_CN ? -ENOBUFS : 0)
 

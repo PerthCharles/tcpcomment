@@ -2268,8 +2268,8 @@ void inet_sk_rx_dst_set(struct sock *sk, const struct sk_buff *skb)
 EXPORT_SYMBOL(inet_sk_rx_dst_set);
 
 const struct inet_connection_sock_af_ops ipv4_specific = {
-	.queue_xmit	   = ip_queue_xmit,
-	.send_check	   = tcp_v4_send_check,
+	.queue_xmit	   = ip_queue_xmit,     /* 将数据包交给ip 层进行处理 */
+	.send_check	   = tcp_v4_send_check, /* 计算checksum */
 	.rebuild_header	   = inet_sk_rebuild_header,
 	.sk_rx_dst_set	   = inet_sk_rx_dst_set,
 	.conn_request	   = tcp_v4_conn_request,

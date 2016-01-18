@@ -3423,7 +3423,7 @@ static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
 
 	net_timestamp_check(!netdev_tstamp_prequeue, skb);
 
-    /* 额，这个有ftrace可以追踪网卡收的skb么
+    /* 额，这个有ftrace可以追踪哪个网卡收的skb么
      * TODO: 确认一下 */
 	trace_netif_receive_skb(skb);
 

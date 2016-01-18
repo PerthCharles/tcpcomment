@@ -215,6 +215,7 @@ static int ip_local_deliver_finish(struct sk_buff *skb)
 				}
 				nf_reset(skb);
 			}
+            /* 调用传输层的处理函数，如tcp_v4_rcv() */
 			ret = ipprot->handler(skb);
 			if (ret < 0) {
 				protocol = -ret;

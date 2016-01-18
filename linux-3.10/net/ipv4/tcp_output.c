@@ -176,7 +176,7 @@ static void tcp_event_data_sent(struct tcp_sock *tp,
 	 * packet, enter pingpong mode.
 	 */
     /* 如果这次发送数据距离上次收到数据的间隔在ato(Ack TimeOut)时间内，
-     * 则进入pingpong模式，即interactive数据有来有往的情况 */
+     * 则进入pingpong模式，即interactive -- 数据有来有往的情况 */
 	if ((u32)(now - icsk->icsk_ack.lrcvtime) < icsk->icsk_ack.ato)
 		icsk->icsk_ack.pingpong = 1;
 }
@@ -186,7 +186,7 @@ static inline void tcp_event_ack_sent(struct sock *sk, unsigned int pkts)
 {
     /* 发出了pkts个ack包，就减小pkts个需要被快速确认的ACK个数 */
 	tcp_dec_quickack_mode(sk, pkts);
-    /* 当发送出一个ACK后，就清楚延迟确认定时器 */
+    /* 当发送出一个ACK后，就清除延迟确认定时器 */
 	inet_csk_clear_xmit_timer(sk, ICSK_TIME_DACK);
 }
 
@@ -267,6 +267,7 @@ EXPORT_SYMBOL(tcp_select_initial_window);
  * value can be stuffed directly into th->window for an outgoing
  * frame.
  */
+/* TODO: 确定接收窗口如是如何计算出来的 */
 static u16 tcp_select_window(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -427,11 +428,17 @@ struct tcp_out_options {
  * At least SACK_PERM as the first option is known to lead to a disaster
  * (but it may well be that other scenarios fail similarly).
  */
+/* 实际往skb数据包头部填充选项 */
+/* option format的基本格式：
+ *      1字节 option kind + 1字节 option len + (option len - 2)字节 option data
+ * 如果有的选项长度不是4字节的整数倍，则要添加TCPOPT_NOP空类型选项进行对齐处理
+ * 比如timestamp选项时10字节长度，它的做法是添加两个TCPOPT_NOP选项在头部 */
 static void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 			      struct tcp_out_options *opts)
 {
 	u16 options = opts->options;	/* mungable copy */
 
+    /* MD5选项 */
 	if (unlikely(OPTION_MD5 & options)) {
 		*ptr++ = htonl((TCPOPT_NOP << 24) | (TCPOPT_NOP << 16) |
 			       (TCPOPT_MD5SIG << 8) | TCPOLEN_MD5SIG);
@@ -440,14 +447,15 @@ static void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 		ptr += 4;
 	}
 
+    /* 只有SYN包中会有mss */
 	if (unlikely(opts->mss)) {
 		*ptr++ = htonl((TCPOPT_MSS << 24) |
 			       (TCPOLEN_MSS << 16) |
 			       opts->mss);
 	}
 
-    /* 写入SACK_Permitted选项内容 */
 	if (likely(OPTION_TS & options)) {
+        /* 如果开启了timestamp，那么就利用它的空白区域写入SACK_Permitted选项内容 */
 		if (unlikely(OPTION_SACK_ADVERTISE & options)) {
 			*ptr++ = htonl((TCPOPT_SACK_PERM << 24) |
 				       (TCPOLEN_SACK_PERM << 16) |
@@ -464,6 +472,7 @@ static void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 		*ptr++ = htonl(opts->tsecr);
 	}
 
+    /* 如果没有开启timestamp选项，写入SACK_Permitted选项内容 */
 	if (unlikely(OPTION_SACK_ADVERTISE & options)) {
 		*ptr++ = htonl((TCPOPT_NOP << 24) |
 			       (TCPOPT_NOP << 16) |
@@ -471,6 +480,7 @@ static void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 			       TCPOLEN_SACK_PERM);
 	}
 
+    /* 只有SYN包中带win scale选项，所以是unlikely */
 	if (unlikely(OPTION_WSCALE & options)) {
 		*ptr++ = htonl((TCPOPT_NOP << 24) |
 			       (TCPOPT_WINDOW << 16) |
@@ -478,7 +488,9 @@ static void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 			       opts->ws);
 	}
 
+    /* 写入SACK选项内容 */
 	if (unlikely(opts->num_sack_blocks)) {
+        /* 具体SACK选项每个block需要写的内容，已经事先写入了tp结构体中 */
 		struct tcp_sack_block *sp = tp->rx_opt.dsack ?
 			tp->duplicate_sack : tp->selective_acks;
 		int this_sack;
@@ -495,9 +507,11 @@ static void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 			*ptr++ = htonl(sp[this_sack].end_seq);
 		}
 
+        /* dsack只会发送一次 */
 		tp->rx_opt.dsack = 0;
 	}
 
+    /* 写入fastopen选项 */
 	if (unlikely(OPTION_FAST_OPEN_COOKIE & options)) {
 		struct tcp_fastopen_cookie *foc = opts->fastopen_cookie;
 
@@ -931,7 +945,10 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	 */
 	skb->ooo_okay = sk_wmem_alloc_get(sk) == 0;
 
+    /* 将[data, tail] 扩大为 [data - tcp_header_size, tail]
+     * 即根据计算得到的tcp头部大小，调整指针位置 */
 	skb_push(skb, tcp_header_size);
+    /* 设置传输层协议头位置 */
 	skb_reset_transport_header(skb);
 
     /* skb马上就要从TCP层离开，进入IP层了，
@@ -943,17 +960,21 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
     /* 如果开启TSO机制，则使用tcp_wfree负责销毁skb结构体 */
 	skb->destructor = (sysctl_tcp_limit_output_bytes > 0) ?
 			  tcp_wfree : sock_wfree;
+    /* 增加放入qdisc/device queue中数据的字节数 */
 	atomic_add(skb->truesize, &sk->sk_wmem_alloc);
 
 	/* Build TCP header and checksum it. */
+    /* th指向传输层的头部 */
 	th = tcp_hdr(skb);
 	th->source		= inet->inet_sport;
 	th->dest		= inet->inet_dport;
 	th->seq			= htonl(tcb->seq);
 	th->ack_seq		= htonl(tp->rcv_nxt);
+    /* 4bits长的 header len域， + tcp flags域 */
 	*(((__be16 *)th) + 6)	= htons(((tcp_header_size >> 2) << 12) |
 					tcb->tcp_flags);
 
+    /* 决定TCP头部接收窗口域的值，如果带SYN标记的包，则不允许使用win scaling */
 	if (unlikely(tcb->tcp_flags & TCPHDR_SYN)) {
 		/* RFC1323: The window in SYN & SYN/ACK segments
 		 * is never scaled.
@@ -962,10 +983,13 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	} else {
 		th->window	= htons(tcp_select_window(sk));
 	}
+    /* checksum后续会计算 */
 	th->check		= 0;
+    /* urgent pointer一般都是null */
 	th->urg_ptr		= 0;
 
 	/* The urg_mode check is necessary during a below snd_una win probe */
+    /* TODO: urget pointer的功能详细分析一下 */
 	if (unlikely(tcp_urg_mode(tp) && before(tcb->seq, tp->snd_up))) {
 		if (before(tp->snd_up, tcb->seq + 0x10000)) {
 			th->urg_ptr = htons(tp->snd_up - tcb->seq);
@@ -976,6 +1000,8 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 		}
 	}
 
+    /* 前面已经过该数据包需要添加哪些选项了，下面进行实际的处理 */
+    /* (th + 1)指向了option区域的起始位置 */
 	tcp_options_write((__be32 *)(th + 1), tp, &opts);
     /* 不带SYN标记，是一个普通的数据包, 根据情况设置ECN标记 */
 	if (likely((tcb->tcp_flags & TCPHDR_SYN) == 0))
@@ -990,24 +1016,31 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	}
 #endif
 
+    /* 计算checksum */
 	icsk->icsk_af_ops->send_check(sk, skb);
 
+    /* 除了SYN包，其他包都会带ACK标记，自然是likely */
 	if (likely(tcb->tcp_flags & TCPHDR_ACK))
+        /* 主要是处理delay ack的逻辑 */
 		tcp_event_ack_sent(sk, tcp_skb_pcount(skb));
 
+    /* 如果数据部分的大小与头部的大小不一致，则说明同时还发送了数据 */
 	if (skb->len != tcp_header_size)
+        /* 主要处理idle start */
 		tcp_event_data_sent(tp, sk);
 
 	if (after(tcb->end_seq, tp->snd_nxt) || tcb->seq == tcb->end_seq)
-        /* 只有发送新数据，或者发送纯ACK时才会记录，
+        /* 只有发送新数据(带SYN或者FIN标记，也是数据)，或者发送纯ACK时才会记录，
          * 也就是说OUTSEGS不会记录重传包的个数, 这点要谨记！ */
 		TCP_ADD_STATS(sock_net(sk), TCP_MIB_OUTSEGS,
 			      tcp_skb_pcount(skb));
 
+    /* 将数据包交给ip层接着处理 */
 	err = icsk->icsk_af_ops->queue_xmit(skb, &inet->cork.fl);
 	if (likely(err <= 0))
 		return err;
 
+    /* 如果有ip层处理后返回错误，则要进入CWR状态 */
 	tcp_enter_cwr(sk, 1);
 
 	return net_xmit_eval(err);

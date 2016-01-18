@@ -498,7 +498,7 @@ struct sk_buff {
 	__u8			ndisc_nodetype:2;
 #endif
 	__u8			pfmemalloc:1;
-	__u8			ooo_okay:1;
+	__u8			ooo_okay:1;     /* 用于XPS机制 */
 	__u8			l4_rxhash:1;
 	__u8			wifi_acked_valid:1;
 	__u8			wifi_acked:1;

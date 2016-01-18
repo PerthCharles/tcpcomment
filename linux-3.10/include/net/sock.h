@@ -342,7 +342,10 @@ struct sock {
 	struct dst_entry	*sk_rx_dst;
 	struct dst_entry __rcu	*sk_dst_cache;
 	spinlock_t		sk_dst_lock;
-	atomic_t		sk_wmem_alloc;              /* 用于发送数据所占用的内存开销，包括SKB header开销 */
+    /* 用于发送数据所占用的内存开销，包括SKB header开销
+     * 包括放到qdisc + dev queue中的内存 !!! */
+    /* 英文注释的理解： 已经提交至发送队列的skb所占用的内存，这里的发送队列应该是指qdisc + dev queue */
+	atomic_t		sk_wmem_alloc;              
 	atomic_t		sk_omem_alloc;
 	int			sk_sndbuf;
 	struct sk_buff_head	sk_write_queue;
