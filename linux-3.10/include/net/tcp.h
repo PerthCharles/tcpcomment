@@ -190,7 +190,7 @@ extern void tcp_time_wait(struct sock *sk, int state, int timeo);
 /*
  *     TCP option lengths
  */
-
+/* 每个选项的设计长度，未考虑对齐 */
 #define TCPOLEN_MSS            4
 #define TCPOLEN_WINDOW         3
 #define TCPOLEN_SACK_PERM      2
@@ -203,6 +203,7 @@ extern void tcp_time_wait(struct sock *sk, int state, int timeo);
 #define TCPOLEN_COOKIE_MAX     (TCPOLEN_COOKIE_BASE+TCP_COOKIE_MAX)
 
 /* But this is what stacks really send out. */
+/* 考虑4字节对齐后的长度 */
 #define TCPOLEN_TSTAMP_ALIGNED		12
 #define TCPOLEN_WSCALE_ALIGNED		4
 #define TCPOLEN_SACKPERM_ALIGNED	4

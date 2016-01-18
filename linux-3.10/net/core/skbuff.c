@@ -1297,10 +1297,15 @@ EXPORT_SYMBOL(skb_pad);
  *	exceed the total buffer size the kernel will panic. A pointer to the
  *	first byte of the extra data is returned.
  */
+/* 往skb的linear-data area新增长度为len的数据 */
+/* 将[data, tail] 增加为 [data, tail+len] */
 unsigned char *skb_put(struct sk_buff *skb, unsigned int len)
 {
+    /* 获取当前的tail指针位置 */
 	unsigned char *tmp = skb_tail_pointer(skb);
+    /* 只能在未分配nonlinear area时操作 */
 	SKB_LINEAR_ASSERT(skb);
+    /* 将tail往后移动，len也增加 */
 	skb->tail += len;
 	skb->len  += len;
 	if (unlikely(skb->tail > skb->end))
@@ -1318,6 +1323,7 @@ EXPORT_SYMBOL(skb_put);
  *	start. If this would exceed the total buffer headroom the kernel will
  *	panic. A pointer to the first byte of the extra data is returned.
  */
+/* 将[data, tail] 增加为 [data-len, tail] */
 unsigned char *skb_push(struct sk_buff *skb, unsigned int len)
 {
 	skb->data -= len;
@@ -1338,6 +1344,7 @@ EXPORT_SYMBOL(skb_push);
  *	is returned. Once the data has been pulled future pushes will overwrite
  *	the old data.
  */
+/* 将[date, tail]缩小为[data+len, tail] */
 unsigned char *skb_pull(struct sk_buff *skb, unsigned int len)
 {
 	return skb_pull_inline(skb, len);
@@ -1353,6 +1360,7 @@ EXPORT_SYMBOL(skb_pull);
  *	the buffer is already under the length specified it is not modified.
  *	The skb must be linear.
  */
+/* 将skb的数据区域的长度强制截取为len */
 void skb_trim(struct sk_buff *skb, unsigned int len)
 {
 	if (skb->len > len)

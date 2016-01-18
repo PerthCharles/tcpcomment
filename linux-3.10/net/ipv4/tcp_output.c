@@ -120,6 +120,7 @@ static inline __u32 tcp_acceptable_seq(const struct sock *sk)
  * 5. Value 65535 for MSS is valid in IPv6 and means "as large as possible,
  *    probably even Jumbo".
  */
+/* 计算出放在SYN包中的MSS选项值 */
 static __u16 tcp_advertise_mss(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -405,7 +406,7 @@ static inline bool tcp_urg_mode(const struct tcp_sock *tp)
 #define OPTION_FAST_OPEN_COOKIE	(1 << 8)
 
 struct tcp_out_options {
-	u16 options;		/* bit field of OPTION_* */
+	u16 options;		/* bit field of OPTION_* */ /* 标记开启了哪些option */
 	u16 mss;		/* 0 to disable */
 	u8 ws;			/* window scale, 0 to disable */
 	u8 num_sack_blocks;	/* number of SACK blocks to include */
@@ -531,12 +532,13 @@ static void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 /* Compute TCP options for SYN packets. This is not the final
  * network wire format yet.
  */
+/* 计算SYN包的option */
 static unsigned int tcp_syn_options(struct sock *sk, struct sk_buff *skb,
 				struct tcp_out_options *opts,
 				struct tcp_md5sig_key **md5)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	unsigned int remaining = MAX_TCP_OPTION_SPACE;
+	unsigned int remaining = MAX_TCP_OPTION_SPACE;  /* 最大长度:40B */
 	struct tcp_fastopen_request *fastopen = tp->fastopen_req;
 
 #ifdef CONFIG_TCP_MD5SIG
@@ -561,12 +563,14 @@ static unsigned int tcp_syn_options(struct sock *sk, struct sk_buff *skb,
 	opts->mss = tcp_advertise_mss(sk);
 	remaining -= TCPOLEN_MSS_ALIGNED;
 
+    /* 从代码上都是偏向开启的以下选项的：timestamp、window scaling、sack */
 	if (likely(sysctl_tcp_timestamps && *md5 == NULL)) {
 		opts->options |= OPTION_TS;
 		opts->tsval = TCP_SKB_CB(skb)->when + tp->tsoffset;
 		opts->tsecr = tp->rx_opt.ts_recent;
 		remaining -= TCPOLEN_TSTAMP_ALIGNED;
 	}
+    /* window scaling 只在SYN包中有效，谨记 */
 	if (likely(sysctl_tcp_window_scaling)) {
 		opts->ws = tp->rx_opt.rcv_wscale;
 		opts->options |= OPTION_WSCALE;
@@ -589,10 +593,12 @@ static unsigned int tcp_syn_options(struct sock *sk, struct sk_buff *skb,
 		}
 	}
 
+    /* 返回值是用掉了多少空间 */
 	return MAX_TCP_OPTION_SPACE - remaining;
 }
 
 /* Set up TCP options for SYN-ACKs. */
+/* 设置好SYN/ACK包的选项 */
 static unsigned int tcp_synack_options(struct sock *sk,
 				   struct request_sock *req,
 				   unsigned int mss, struct sk_buff *skb,
@@ -621,25 +627,30 @@ static unsigned int tcp_synack_options(struct sock *sk,
 #endif
 
 	/* We always send an MSS option. */
+    /* MSS是必须的 */
 	opts->mss = mss;
 	remaining -= TCPOLEN_MSS_ALIGNED;
 
+    /* win scale必须是双向协商，同时使用的 */
 	if (likely(ireq->wscale_ok)) {
 		opts->ws = ireq->rcv_wscale;
 		opts->options |= OPTION_WSCALE;
 		remaining -= TCPOLEN_WSCALE_ALIGNED;
 	}
+    /* tstamp也必须是双向同时支持的 */
 	if (likely(ireq->tstamp_ok)) {
 		opts->options |= OPTION_TS;
 		opts->tsval = TCP_SKB_CB(skb)->when;
 		opts->tsecr = req->ts_recent;
 		remaining -= TCPOLEN_TSTAMP_ALIGNED;
 	}
+    /* 只要对端支持SACK，打上标记 */
 	if (likely(ireq->sack_ok)) {
 		opts->options |= OPTION_SACK_ADVERTISE;
 		if (unlikely(!ireq->tstamp_ok))
 			remaining -= TCPOLEN_SACKPERM_ALIGNED;
 	}
+    /* TODO: 需要系统的看一下fastopen的实现 */
 	if (foc != NULL) {
 		u32 need = TCPOLEN_EXP_FASTOPEN_BASE + foc->len;
 		need = (need + 3) & ~3U;  /* Align to 32 bits */
@@ -656,6 +667,7 @@ static unsigned int tcp_synack_options(struct sock *sk,
 /* Compute TCP options for ESTABLISHED sockets. This is not the
  * final wire format yet.
  */
+/* 计算除SYN包、SYN/ACK包之外的数据包的选项 */
 static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb,
 					struct tcp_out_options *opts,
 					struct tcp_md5sig_key **md5)
@@ -675,6 +687,7 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
 	*md5 = NULL;
 #endif
 
+    /* 处理timestamp选项 */
 	if (likely(tp->rx_opt.tstamp_ok)) {
 		opts->options |= OPTION_TS;
 		opts->tsval = tcb ? tcb->when + tp->tsoffset : 0;
@@ -682,6 +695,7 @@ static unsigned int tcp_established_options(struct sock *sk, struct sk_buff *skb
 		size += TCPOLEN_TSTAMP_ALIGNED;
 	}
 
+    /* 处理SACK和DSACK选项 */
 	eff_sacks = tp->rx_opt.num_sacks + tp->rx_opt.dsack;
 	if (unlikely(eff_sacks)) {
 		const unsigned int remaining = MAX_TCP_OPTION_SPACE - size;
@@ -906,6 +920,7 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	/* If congestion control is doing timestamping, we must
 	 * take such a timestamp before we potentially clone/copy.
 	 */
+    /* 记录调用tcp_transmit_skb()时的时间戳 */
 	if (icsk->icsk_ca_ops->flags & TCP_CONG_RTT_STAMP)
 		__net_timestamp(skb);
 
@@ -927,9 +942,11 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 
 	inet = inet_sk(sk);
 	tp = tcp_sk(sk);
+    /* 获取skb的cb控制块 */
 	tcb = TCP_SKB_CB(skb);
 	memset(&opts, 0, sizeof(opts));
 
+    /* 计算SYN包中的option和非SYN包中的option是存在不同的 */
 	if (unlikely(tcb->tcp_flags & TCPHDR_SYN))
 		tcp_options_size = tcp_syn_options(sk, skb, &opts, &md5);
 	else

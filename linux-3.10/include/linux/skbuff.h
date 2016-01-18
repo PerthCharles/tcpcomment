@@ -1404,11 +1404,13 @@ static inline unsigned char *skb_tail_pointer(const struct sk_buff *skb)
 
 /* 可以看出tail其实并不是一个指针，而是表示tail位置与sk_buff分配的内存空间其实位置head之间的偏移量
  * (skb->head + skb->tail) 才是真正意义上的指向实际data区域的尾部 */
+/* 将tail表示的偏移位置指向data的位置 */
 static inline void skb_reset_tail_pointer(struct sk_buff *skb)
 {
 	skb->tail = skb->data - skb->head;  
 }
 
+/* 根据len的长度，来设置tail */
 static inline void skb_set_tail_pointer(struct sk_buff *skb, const int offset)
 {
 	skb_reset_tail_pointer(skb);
@@ -1445,6 +1447,7 @@ static inline unsigned char *__skb_put(struct sk_buff *skb, unsigned int len)
 	return tmp;
 }
 
+/* 将[date, tail]增大为[data-len, tail] */
 extern unsigned char *skb_push(struct sk_buff *skb, unsigned int len);
 static inline unsigned char *__skb_push(struct sk_buff *skb, unsigned int len)
 {
@@ -1453,6 +1456,7 @@ static inline unsigned char *__skb_push(struct sk_buff *skb, unsigned int len)
 	return skb->data;
 }
 
+/* 将[date, tail]缩小为[data+len, tail] */
 extern unsigned char *skb_pull(struct sk_buff *skb, unsigned int len);
 static inline unsigned char *__skb_pull(struct sk_buff *skb, unsigned int len)
 {
@@ -1882,6 +1886,7 @@ static inline int pskb_network_may_pull(struct sk_buff *skb, unsigned int len)
 
 extern int ___pskb_trim(struct sk_buff *skb, unsigned int len);
 
+/* 强制截取skb的长度为len(包括linear-data area len和nonlinear-data area) */
 static inline void __skb_trim(struct sk_buff *skb, unsigned int len)
 {
 	if (unlikely(skb_is_nonlinear(skb))) {
@@ -2300,22 +2305,29 @@ static inline int skb_padto(struct sk_buff *skb, unsigned int len)
 	return skb_pad(skb, len - size);
 }
 
+/* 将用户态的数据，添加到内核态的skb中 */
 static inline int skb_add_data(struct sk_buff *skb,
 			       char __user *from, int copy)
 {
 	const int off = skb->len;
 
+    /* 如果没有计算过csum */
 	if (skb->ip_summed == CHECKSUM_NONE) {
 		int err = 0;
+        /* 将数据拷贝到内核态，同时计算部分csum
+         * 新拷贝的数据将导致skb的数据区间[data, tail]变为 [data, tail+copy] */
 		__wsum csum = csum_and_copy_from_user(from, skb_put(skb, copy),
 							    copy, 0, &err);
 		if (!err) {
+            /* 如果没有错误，就将新拷贝进入的数据的csum与现有数据的csum进行相加 */
 			skb->csum = csum_block_add(skb->csum, csum, off);
 			return 0;
 		}
+    /* 如果可以交给硬件来做，就单纯的拷贝到skb的数据区域就好 */
 	} else if (!copy_from_user(skb_put(skb, copy), from, copy))
 		return 0;
 
+    /* 如果失败，则恢复skb原始数据长度 */
 	__skb_trim(skb, off);
 	return -EFAULT;
 }
