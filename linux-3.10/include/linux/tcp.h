@@ -243,6 +243,7 @@ struct tcp_sock {
  	u32	rcv_wnd;	/* Current receiver window		*/
 	u32	write_seq;	/* Tail(+1) of data held in tcp send buffer */
 	u32	pushed_seq;	/* Last pushed seq, required to talk to windows */
+    /* 已经被标记为TCPCB_LOST的skb的个数 */
 	u32	lost_out;	/* Lost packets			*/
     /* 被SACKED的数据段的个数，如果SACK选项不开，则是dupack的个数 */
 	u32	sacked_out;	/* SACK'd packets			*/
@@ -252,7 +253,7 @@ struct tcp_sock {
 	/* from STCP, retrans queue hinting */
 	struct sk_buff* lost_skb_hint;
 	struct sk_buff *scoreboard_skb_hint;
-	struct sk_buff *retransmit_skb_hint;
+	struct sk_buff *retransmit_skb_hint;    /* 表示将要重传的起始包 */
 
 	struct sk_buff_head	out_of_order_queue; /* Out of order segments go here */
 
@@ -269,6 +270,9 @@ struct tcp_sock {
 					 */
 
 	int     lost_cnt_hint;
+    /* 记录被标记为TCPCB_LOST标记的最大的序号 
+     * 一般情况下，只有[snd_una, retransmit_high]区间内的数据包需要进行重传 
+     * 即需要重传的数据包的最大序号。*/
 	u32     retransmit_high;	/* L-bits may be on up to this seqno */
 
 	u32	lost_retrans_low;	/* Sent seq after any rxmit (lowest) */

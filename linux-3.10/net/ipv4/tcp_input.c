@@ -1945,7 +1945,9 @@ void tcp_enter_loss(struct sock *sk, int how)
 		tp->sacked_out = 0;
 		tp->fackets_out = 0;
 	}
-    /* TODO: retrans_hints是什么鬼？ */
+    /* TODO-DOEN: retrans_hints是什么鬼？ */
+    /* 标记在重传队列中，将要被重传的第一个SKB */
+    /* RTO超时后，这个标记会被清除 */
 	tcp_clear_all_retrans_hints(tp);
 
     /* 进一次loss状态，都会遍历一次整个重传队列啊，代价惨重 ! */
@@ -1972,7 +1974,7 @@ void tcp_enter_loss(struct sock *sk, int how)
 			TCP_SKB_CB(skb)->sacked |= TCPCB_LOST;              /* 标记loss标记 */
 			tp->lost_out += tcp_skb_pcount(skb);                /* 既然把之前被SACK的包认为也丢弃了，则更新计数器 */
             /* TODO-DONE： retransmit_high的内在含义是？
-             * 记录被标记为TCPCV_LOST标记的最大的序号 */
+             * 记录被标记为TCPCB_LOST标记的最大的序号 */
 			tp->retransmit_high = TCP_SKB_CB(skb)->end_seq;
 		}
 	}

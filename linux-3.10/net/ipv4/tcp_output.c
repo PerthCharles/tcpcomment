@@ -2578,16 +2578,19 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 /* Check if we forward retransmits are possible in the current
  * window/congestion state.
  */
+/* 判断是否可以forward retrans */
 static bool tcp_can_forward_retransmit(struct sock *sk)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 	const struct tcp_sock *tp = tcp_sk(sk);
 
 	/* Forward retransmissions are possible only during Recovery. */
+    /* 只有在Recovery 状态下才能forward retrans */
 	if (icsk->icsk_ca_state != TCP_CA_Recovery)
 		return false;
 
 	/* No forward retransmissions in Reno are possible. */
+    /* Reno不支持SACK选项，所以也不允许fwd retrans */
 	if (tcp_is_reno(tp))
 		return false;
 
@@ -2598,7 +2601,7 @@ static bool tcp_can_forward_retransmit(struct sock *sk)
 	 * segments to send. In the other cases, follow rule 3 for
 	 * NextSeg() specified in RFC3517.
 	 */
-
+    /* 如果能发送新数据，也不执行fwd retrans */
 	if (tcp_may_send_now(sk))
 		return false;
 
@@ -2613,6 +2616,12 @@ static bool tcp_can_forward_retransmit(struct sock *sk)
  * based retransmit packet might feed us FACK information again.
  * If so, we use it to avoid unnecessarily retransmissions.
  */
+/* 该函数负责遍历重传队列，决定哪个SKB需要重传
+ * 1. 首先重传标记为TCPCB_LOST的skb
+ * 2. 之后可能还会重传：已发送的，但尚未收到确认的包(向前重传)
+ *
+ * 英文注释应该是不准确的，该函数不仅仅是在timeout之后会调用。在Recovery阶段也会调用
+ */
 void tcp_xmit_retransmit_queue(struct sock *sk)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
@@ -2623,28 +2632,42 @@ void tcp_xmit_retransmit_queue(struct sock *sk)
 	int mib_idx;
 	int fwd_rexmitting = 0;
 
+    /* 如果没有未确认的数据包，则直接返回 */
 	if (!tp->packets_out)
 		return;
 
+    /* 如果没有被标记为TCPCB_LOST的SKB，则将retransmit_high复位至snd_una */
 	if (!tp->lost_out)
 		tp->retransmit_high = tp->snd_una;
 
+    /* 如果设置过需要重传的起始包，则从这个数据包开始遍历重传队列 */
 	if (tp->retransmit_skb_hint) {
 		skb = tp->retransmit_skb_hint;
 		last_lost = TCP_SKB_CB(skb)->end_seq;
+        /* 开启遍历重传队列时，last_lost不能超过retransmit_high */
 		if (after(last_lost, tp->retransmit_high))
 			last_lost = tp->retransmit_high;
 	} else {
+        /* 否则从第一个数据包开始遍历重传队列 */
+        /* 走这个分支的典型场景： RTO后，retransmit_skb_hint被清除 */
 		skb = tcp_write_queue_head(sk);
 		last_lost = tp->snd_una;
 	}
 
+    /* 从上面确定的skb处开始遍历重传队列 */
 	tcp_for_write_queue_from(skb, sk) {
+        /* 获取该skb的SACK/FACK标记信息 */
 		__u8 sacked = TCP_SKB_CB(skb)->sacked;
 
+        /* 最多只能遍历到snd_nxt，也就是send head */
 		if (skb == tcp_send_head(sk))
 			break;
 		/* we could do better than to assign each time */
+        /* hole初始值为NULL，所以retransmit_skb_hint会默认指向进入循环时遍历的第一个SKB */
+        /* hole为空的场景:
+         * 1. hole默认为空，如果重传队列的起始几个SKB都不是hole，那么retransmit_skb_hint也会在每次循环是更新
+         * 2. 在刚启用fwd时，如果需要hole不为空，则从hole位置开始fwd retrans，同时hole也会设置为空
+         *    进而在所有被fwd retrans的SKB，都是满足hole为NULL，从而retransmit_skb_hint会指向最后一个被 fwd retrans的数据包 */
 		if (hole == NULL)
 			tp->retransmit_skb_hint = skb;
 
@@ -2655,17 +2678,26 @@ void tcp_xmit_retransmit_queue(struct sock *sk)
 		 * packet to be MSS sized and all the
 		 * packet counting works out.
 		 */
+        /* 如果pkts inflight超过了cwnd，则停止重传 */
 		if (tcp_packets_in_flight(tp) >= tp->snd_cwnd)
 			return;
 
+        /* 默认情况是不启用forward retrans的，后续会看什么情况下会触发forward retrans */
 		if (fwd_rexmitting) {
 begin_fwd:
+            /* 即使启用fwd retrans, 最大的允许范围也就是[retransmit_high, highest sack seq] */
 			if (!before(TCP_SKB_CB(skb)->seq, tcp_highest_sack_seq(tp)))
 				break;
 			mib_idx = LINUX_MIB_TCPFORWARDRETRANS;
 
+        /* 如果遍历到了retransmit_high，则需要看看是否可以执行forward retrans了 */
 		} else if (!before(TCP_SKB_CB(skb)->seq, tp->retransmit_high)) {
+            /* 更新retransmit_high为标记为TCPCB_LOST的最大序号 */
 			tp->retransmit_high = last_lost;
+            /* 判断是否允许fwd retrans，只有以下条件均成立时，才会触发forward retrans 
+             * 1. 处于Recovery阶段
+             * 2. 不是Reno算法，即支持SACK选项
+             * 3. 没有新数据可以发送 */
 			if (!tcp_can_forward_retransmit(sk))
 				break;
 			/* Backtrack if necessary to non-L'ed skb */
@@ -2676,12 +2708,18 @@ begin_fwd:
 			fwd_rexmitting = 1;
 			goto begin_fwd;
 
+        /* 如果SKB没有标记LOST标记，则不会被重传。继续遍历下一个SKB */
 		} else if (!(sacked & TCPCB_LOST)) {
+            /* 如果SKB没有重传过，也没有被SACK确认，则说明它正在等待被按序确认。
+             * 也就是说，这个SKB是一个空洞需要被按序确认掉，所以用hole指向它 */
+            /* hole功能：在启用fwd retrans后，记录从哪个地方开始fwd retrans */
 			if (hole == NULL && !(sacked & (TCPCB_SACKED_RETRANS|TCPCB_SACKED_ACKED)))
 				hole = skb;
 			continue;
 
 		} else {
+            /* 执行这条分支说明: SKB被标记为了TCPCB_LOST标记，所以需要重传 */
+            /* last_lost每次都更新，最终的结果就是：last_lost记录最大lost序号 */
 			last_lost = TCP_SKB_CB(skb)->end_seq;
 			if (icsk->icsk_ca_state != TCP_CA_Loss)
                 /* 快速重传"成功"次数*/
@@ -2691,6 +2729,9 @@ begin_fwd:
 				mib_idx = LINUX_MIB_TCPSLOWSTARTRETRANS;
 		}
 
+        /* 如果该SKB已经被SACK确认过，或者已经重传了, 则继续遍历下一个SKB */
+        /* TODO-DONE: 这个为什么需要判断TCPCB_SACKED_RETRANS标记 ?
+         * 因为如果启用了fwd retrans，遍历的位置可能会回退到hole位置, 所以遍历时可能遇到刚刚已经重传过了的SKB */
 		if (sacked & (TCPCB_SACKED_ACKED|TCPCB_SACKED_RETRANS))
 			continue;
 
@@ -2702,9 +2743,12 @@ begin_fwd:
 		}
 		NET_INC_STATS_BH(sock_net(sk), mib_idx);
 
+        /* 如果处于CWR或Recovery阶段，则更新PRR算法发送出的数据包个数 */
 		if (tcp_in_cwnd_reduction(sk))
 			tp->prr_out += tcp_skb_pcount(skb);
 
+        /* 如果是从重传队列的第一个SKB处开始遍历的，则需要重新设置RTO timer */
+        /* 因为RTO后，retrans hint会被清除。所以如果下式成立，说明这是RTO超时后调用了该函数，所以需要重设RTO timer */
 		if (skb == tcp_write_queue_head(sk))
 			inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS,
 						  inet_csk(sk)->icsk_rto,
