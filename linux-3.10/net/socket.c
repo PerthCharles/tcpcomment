@@ -161,7 +161,6 @@ static const struct net_proto_family __rcu *net_families[NPROTO] __read_mostly;
 /*
  *	Statistics counters of the socket lists
  */
-
 static DEFINE_PER_CPU(int, sockets_in_use);
 
 /*
@@ -208,7 +207,7 @@ int move_addr_to_kernel(void __user *uaddr, int ulen, struct sockaddr_storage *k
  *	length of the data is written over the length limit the user
  *	specified. Zero is returned for a success.
  */
-
+/* 将内核态的sockaddr信息，拷贝到用户态 */
 static int move_addr_to_user(struct sockaddr_storage *kaddr, int klen,
 			     void __user *uaddr, int __user *ulen)
 {
@@ -327,6 +326,7 @@ static struct dentry *sockfs_mount(struct file_system_type *fs_type,
 
 static struct vfsmount *sock_mnt __read_mostly;
 
+/* TODO： sock fs type 是神马？ 怎么用？谁会用？ */
 static struct file_system_type sock_fs_type = {
 	.name =		"sockfs",
 	.mount =	sockfs_mount,
@@ -1809,7 +1809,8 @@ SYSCALL_DEFINE3(getpeername, int, fd, struct sockaddr __user *, usockaddr,
  *	space and check the user space data area is readable before invoking
  *	the protocol.
  */
-
+/* 将数据发送给指定地址
+ * sys_send()调用该函数时，并没有指定sockaddr，是因为fd对应的socket一般已经设置好了目的地址了 */
 SYSCALL_DEFINE6(sendto, int, fd, void __user *, buff, size_t, len,
 		unsigned int, flags, struct sockaddr __user *, addr,
 		int, addr_len)
@@ -1856,7 +1857,7 @@ out:
 /*
  *	Send a datagram down a socket.
  */
-
+/* sys_send()系统调用，用于发送数据 */
 SYSCALL_DEFINE4(send, int, fd, void __user *, buff, size_t, len,
 		unsigned int, flags)
 {

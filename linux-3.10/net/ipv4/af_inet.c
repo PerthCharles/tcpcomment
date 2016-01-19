@@ -1636,6 +1636,7 @@ static const struct net_protocol igmp_protocol = {
 };
 #endif
 
+/* TCP协议对应的处理函数，用于IP层根据协议类型进行调用 */
 static const struct net_protocol tcp_protocol = {
 	.early_demux	=	tcp_v4_early_demux,
 	.handler	=	tcp_v4_rcv,
