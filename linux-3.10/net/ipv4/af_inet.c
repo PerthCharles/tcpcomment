@@ -667,7 +667,8 @@ int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 		goto out;
 	case SS_CONNECTED:
         /* connect()默认是blocking形式调用，
-         * TODO: 如果是non blocking形式，岂不是要靠这个错误码来知道连接建立完事了？ */
+         * TODO-DONE: 如果是non blocking形式，岂不是要靠这个错误码来知道连接建立完事了？ */
+        /* 答： send()处理函数会主动的等待connect的完成 ! */
 		err = -EISCONN;     
 		goto out;
 	case SS_CONNECTING:
@@ -827,6 +828,7 @@ int inet_getname(struct socket *sock, struct sockaddr *uaddr,
 }
 EXPORT_SYMBOL(inet_getname);
 
+/* INET AF的sendmsg处理函数 */
 int inet_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 		 size_t size)
 {
@@ -839,6 +841,7 @@ int inet_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 	    inet_autobind(sk))
 		return -EAGAIN;
 
+    /* 调用具体协议相关的sendmsg函数，如tcp_sendmsg() */
 	return sk->sk_prot->sendmsg(iocb, sk, msg, size);
 }
 EXPORT_SYMBOL(inet_sendmsg);

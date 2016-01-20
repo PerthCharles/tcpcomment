@@ -52,6 +52,7 @@ EXPORT_SYMBOL(sk_stream_write_space);
  *
  * Must be called with the socket locked.
  */
+/* 等待sk完成三次握手 */
 int sk_stream_wait_connect(struct sock *sk, long *timeo_p)
 {
 	struct task_struct *tsk = current;
@@ -62,21 +63,27 @@ int sk_stream_wait_connect(struct sock *sk, long *timeo_p)
 		int err = sock_error(sk);
 		if (err)
 			return err;
+        /* sk必须是处于SYN_SENT或SYN_RECV状态才是等待connect完成的合法状态 */
 		if ((1 << sk->sk_state) & ~(TCPF_SYN_SENT | TCPF_SYN_RECV))
 			return -EPIPE;
+        /* 如果不愿意等待，那么就直接返回try again错误 */
 		if (!*timeo_p)
 			return -EAGAIN;
 		if (signal_pending(tsk))
 			return sock_intr_errno(*timeo_p);
 
 		prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
+        /* 记录该sk有write动作在等待完成 */
 		sk->sk_write_pending++;
+        /* 等待sk变为estab或close wait状态 */
+        /* 等待的时候会release sock, 等待完成会lock sock */
 		done = sk_wait_event(sk, timeo_p,
 				     !sk->sk_err &&
 				     !((1 << sk->sk_state) &
 				       ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT)));
 		finish_wait(sk_sleep(sk), &wait);
 		sk->sk_write_pending--;
+    /* 如果条件不成立，则继续循环。退出循环的逻辑靠的是err的判断 */
 	} while (!done);
 	return 0;
 }

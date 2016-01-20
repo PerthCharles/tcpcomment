@@ -356,7 +356,7 @@ struct sock {
 				sk_protocol  : 8,
 				sk_type      : 16;
 	kmemcheck_bitfield_end(flags);
-	int			sk_wmem_queued;
+	int			sk_wmem_queued;             /* sndbuf是一个上限值，sk_wmem_queued表示sndbuf已经使用的量 */
 	gfp_t			sk_allocation;
 	netdev_features_t	sk_route_caps;
 	netdev_features_t	sk_route_nocaps;
@@ -385,6 +385,7 @@ struct sock {
 	ktime_t			sk_stamp;
 	struct socket		*sk_socket;
 	void			*sk_user_data;
+    /* sk_frag 保存为skb paged data而分配的最近的一个page,从而快速定位skb paged data的位置 */
 	struct page_frag	sk_frag;
 	struct sk_buff		*sk_send_head;
 	__s32			sk_peek_off;
@@ -746,6 +747,7 @@ static inline int sk_stream_wspace(const struct sock *sk)
 
 extern void sk_stream_write_space(struct sock *sk);
 
+/* 如果发送队列已经用完了，则返回false */
 static inline bool sk_stream_memory_free(const struct sock *sk)
 {
 	return sk->sk_wmem_queued < sk->sk_sndbuf;
@@ -1129,6 +1131,7 @@ static inline void sk_leave_memory_pressure(struct sock *sk)
 
 }
 
+/* 进入memory pressure状态 */
 static inline void sk_enter_memory_pressure(struct sock *sk)
 {
 	if (!sk->sk_prot->enter_memory_pressure)
@@ -1142,6 +1145,7 @@ static inline void sk_enter_memory_pressure(struct sock *sk)
 			cg_proto->enter_memory_pressure(sk);
 	}
 
+    /* 如果是TCP协议，则调用tcp_enter_memory_pressure(), 主要的作用就是设置一个标记位 */
 	sk->sk_prot->enter_memory_pressure(sk);
 }
 
@@ -2069,10 +2073,14 @@ static inline void sk_wake_async(struct sock *sk, int how, int band)
  */
 #define SOCK_MIN_RCVBUF (2048 + sizeof(struct sk_buff))
 
+/* 缩小sndbuf，尝试减轻memory pressure */
 static inline void sk_stream_moderate_sndbuf(struct sock *sk)
 {
+    /* 如果sndbuf大小不是用户通过setsockopt()指定的 */
 	if (!(sk->sk_userlocks & SOCK_SNDBUF_LOCK)) {
+        /* 降为已用空间的一半 ! */
 		sk->sk_sndbuf = min(sk->sk_sndbuf, sk->sk_wmem_queued >> 1);
+        /* 最小是2K */
 		sk->sk_sndbuf = max(sk->sk_sndbuf, SOCK_MIN_SNDBUF);
 	}
 }

@@ -318,6 +318,7 @@ struct tcp_splice_state {
 int tcp_memory_pressure __read_mostly;
 EXPORT_SYMBOL(tcp_memory_pressure);
 
+/* 进入memory pressure状态 */
 void tcp_enter_memory_pressure(struct sock *sk)
 {
 	if (!tcp_memory_pressure) {
@@ -596,6 +597,7 @@ static inline bool forced_push(const struct tcp_sock *tp)
 	return after(tp->write_seq, tp->pushed_seq + (tp->max_window >> 1));
 }
 
+/* 将skb挂载到发送队列的队尾 */
 static inline void skb_entail(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -606,7 +608,9 @@ static inline void skb_entail(struct sock *sk, struct sk_buff *skb)
 	tcb->tcp_flags = TCPHDR_ACK;
 	tcb->sacked  = 0;
 	skb_header_release(skb);
+    /* 将skb挂载到发送队列的队尾 */
 	tcp_add_write_queue_tail(sk, skb);
+    /* 更新sndbuf已经占用的量，使用skb的truesize来计算内存使用量 */
 	sk->sk_wmem_queued += skb->truesize;
 	sk_mem_charge(sk, skb->truesize);
 	if (tp->nonagle & TCP_NAGLE_PUSH)
@@ -822,11 +826,13 @@ static unsigned int tcp_xmit_size_goal(struct sock *sk, u32 mss_now,
 	return max(xmit_size_goal, mss_now);
 }
 
+/* 返回用于TCP发送的MSS值 */
 static int tcp_send_mss(struct sock *sk, int *size_goal, int flags)
 {
 	int mss_now;
 
 	mss_now = tcp_current_mss(sk);
+    /* 如果启用了GSO技术，则size_goal可能超过mss_now */
 	*size_goal = tcp_xmit_size_goal(sk, mss_now, !(flags & MSG_OOB));
 
 	return mss_now;
@@ -1022,6 +1028,7 @@ static int tcp_sendmsg_fastopen(struct sock *sk, struct msghdr *msg, int *size)
 	return err;
 }
 
+/* TCP协议的send处理函数 */
 int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		size_t size)
 {
@@ -1033,6 +1040,8 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	bool sg;
 	long timeo;
 
+    /* 用户调用send()发送数据，会改变sk诸多内容，需要将sk锁起来。
+     * 在send期间受到的数据包(如ack)会进入backlog queue */
 	lock_sock(sk);
 
 	flags = msg->msg_flags;
@@ -1045,12 +1054,17 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		offset = copied_syn;
 	}
 
+    /* 获取发送超时时间 */
 	timeo = sock_sndtimeo(sk, flags & MSG_DONTWAIT);
 
 	/* Wait for a connection to finish. One exception is TCP Fast Open
 	 * (passive side) where data is allowed to be sent before a connection
 	 * is fully established.
 	 */
+    /* 发送数据必须在connect()完成之后, FASTOPEN socket除外 */
+    /* 一般情况下，应用程序的send()肯定发生在connect()之后，所以这端逻辑一般不会触发。
+     * just in case... 
+     * 更新：connect()如果是以nonblock形式调用的，就会触发这段逻辑 */
 	if (((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT)) &&
 	    !tcp_passive_fastopen(sk)) {
 		if ((err = sk_stream_wait_connect(sk, &timeo)) != 0)
@@ -1073,6 +1087,7 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	/* This should be in poll */
 	clear_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
 
+    /* 获取MSS，在TCP层将数据按MSS分割，避免IP fragment影响性能 */
 	mss_now = tcp_send_mss(sk, &size_goal, flags);
 
 	/* Ok commence sending. */
@@ -1087,6 +1102,8 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
     /* 为1则表示支持Scatter-Gather */
 	sg = !!(sk->sk_route_caps & NETIF_F_SG);
 
+    /* 一个iovec可能有多个io block, 一个个的来
+     * NOTE: 普通的send()iovlen == 1 */
 	while (--iovlen >= 0) {
 		size_t seglen = iov->iov_len;
 		unsigned char __user *from = iov->iov_base;
@@ -1102,28 +1119,44 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			offset = 0;
 		}
 
+        /* 将一个io block放到sndbuf中 */
 		while (seglen > 0) {
 			int copy = 0;
-			int max = size_goal;
+			int max = size_goal;    /* 一个SKB的大小，开启GSO后，会超过一个MSS */
 
+            /* 获取发送队列的最后一个skb, 尝试将数据放到它里面去 */
 			skb = tcp_write_queue_tail(sk);
+            /* 只有在发送队列中已经有数据等待发送时，去尝试队尾的skb合并才有意义 */
 			if (tcp_send_head(sk)) {
 				if (skb->ip_summed == CHECKSUM_NONE)
 					max = mss_now;
 				copy = max - skb->len;
 			}
 
+            /* copy表示发送队列最后一个skb还能放入多少数据, <= 0表示不能再放了，只能新建skb */
 			if (copy <= 0) {
 new_segment:
 				/* Allocate new segment. If the interface is SG,
 				 * allocate skb fitting to single page.
 				 */
+                /* 如果sndbuf配额已经用完了，则进入wait sndbuf状态
+                 * wait结束条件: sndbuf有1/3的空间被ACK后释放出来了 */
 				if (!sk_stream_memory_free(sk))
 					goto wait_for_sndbuf;
 
+                /* 新分配一个SKB */
+                /* If our hardware is aware of the SG technique, we allocate a buffer
+                 * that fits into a single page. Otherwise, we get a buffer of length
+                 * 1 mss (buffer that can hold 1 mss of TCP payload).
+                 * 只有在支持SG时，nonlinear-data area才会启用
+                 */
+                /* 更进一步解释：
+                 * 如果支持SG，那么linear-data area限制在一个page大小，因为数据放到别的page中也不太影响性能；
+                 * 如果不支持，则需要将所有的linear-data area进行连续分配, 即使需要多个page */
 				skb = sk_stream_alloc_skb(sk,
 							  select_size(sk, sg),
 							  sk->sk_allocation);
+                /* 分配失败，等待memory */
 				if (!skb)
 					goto wait_for_memory;
 
@@ -1133,6 +1166,7 @@ new_segment:
 				if (sk->sk_route_caps & NETIF_F_ALL_CSUM)
 					skb->ip_summed = CHECKSUM_PARTIAL;
 
+                /* 将新分配的skb挂载到发送队列的队尾 */
 				skb_entail(sk, skb);
 				copy = size_goal;
 				max = size_goal;
@@ -1143,23 +1177,41 @@ new_segment:
 				copy = seglen;
 
 			/* Where to copy to? */
+            /* 如果linear data area的tail部分还有空间可以放 */
 			if (skb_availroom(skb) > 0) {
 				/* We have some space in skb head. Superb! */
 				copy = min_t(int, copy, skb_availroom(skb));
+                /* 拷贝数据 */
 				err = skb_add_data_nocache(sk, skb, from, copy);
 				if (err)
 					goto do_fault;
 			} else {
+                /* 否则就放入到nonlinear-data area */
+
 				bool merge = true;
+                /* 目前已经分配的paged data 个数 */
 				int i = skb_shinfo(skb)->nr_frags;
+                /* TODO-DONE: sk->sk_frag的含义 ?
+                 * 保存为skb paged data而分配的最近的一个page
+                 * 功能： 用于快速定位skb paged data的位置 */
 				struct page_frag *pfrag = sk_page_frag(sk);
 
+                /* 如果sk_frag对应的page有空额，则直接返回；
+                 * 否则新分配一个page替换 sk_frag */
+                /* 如果新分配一个page失败，则等待内存释放 */
 				if (!sk_page_frag_refill(sk, pfrag))
 					goto wait_for_memory;
 
+                /* 判断pfrag->page是否是skb最后一个paged data页面, 只有满足这个条件才算merge
+                 * 不满足的情况： sk_page_frag_refill()为sk->sk_frag重新分配了一个新page */
 				if (!skb_can_coalesce(skb, i, pfrag->page,
 						      pfrag->offset)) {
+                    /* 1. 如果refill sk_frag之前，分配的page数量已经达到上限，则只能重新分配skb
+                     *       NOTE: 这里已经分配的page也是有意义的，后续总会有skb通过sk->sk_frag用到
+                     * 2. 如果不支持SG，肯定是要新分配skb的，不能使用paged data
+                     *       NOTE: 走这条路径的一种可能：MSS被增大了 */
 					if (i == MAX_SKB_FRAGS || !sg) {
+                        /* TODO： 为什么要打上push标记呢 ? */
 						tcp_mark_push(tp, skb);
 						goto new_segment;
 					}
@@ -1171,6 +1223,7 @@ new_segment:
 				if (!sk_wmem_schedule(sk, copy))
 					goto wait_for_memory;
 
+                /* 将数据拷贝到page上面 */
 				err = skb_copy_to_page_nocache(sk, from, skb,
 							       pfrag->page,
 							       pfrag->offset,
@@ -1180,8 +1233,10 @@ new_segment:
 
 				/* Update the skb. */
 				if (merge) {
+                    /* 如果成功的将数据merge到一个已经分配的page中 */
 					skb_frag_size_add(&skb_shinfo(skb)->frags[i - 1], copy);
 				} else {
+                    /* TODO： 将page挂载到skb中？ */
 					skb_fill_page_desc(skb, i, pfrag->page,
 							   pfrag->offset, copy);
 					get_page(pfrag->page);
@@ -1192,6 +1247,7 @@ new_segment:
 			if (!copied)
 				TCP_SKB_CB(skb)->tcp_flags &= ~TCPHDR_PSH;
 
+            /* 根据copy量，更新 */
 			tp->write_seq += copy;
 			TCP_SKB_CB(skb)->end_seq += copy;
 			skb_shinfo(skb)->gso_segs = 0;
@@ -1204,19 +1260,25 @@ new_segment:
 			if (skb->len < max || (flags & MSG_OOB) || unlikely(tp->repair))
 				continue;
 
+            /* 如果需要被push出去，则打上push标记，并且开始发送数据 */
+            /* TODO: push 是神马鬼 ? forced push又是什么内涵 ? */
 			if (forced_push(tp)) {
 				tcp_mark_push(tp, skb);
 				__tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
+            /* 如果只有一个数据包需要发送，也立即push出去 */
 			} else if (skb == tcp_send_head(sk))
 				tcp_push_one(sk, mss_now);
+            /* 否则就继续将数据拷贝到sndbuf中 */
 			continue;
 
 wait_for_sndbuf:
+            /* 设置nospace标记 */
 			set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
 wait_for_memory:
 			if (copied)
 				tcp_push(sk, flags & ~MSG_MORE, mss_now, TCP_NAGLE_PUSH);
 
+            /* 等待内存释放 */
 			if ((err = sk_stream_wait_memory(sk, &timeo)) != 0)
 				goto do_error;
 

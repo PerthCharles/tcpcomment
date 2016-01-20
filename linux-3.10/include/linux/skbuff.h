@@ -1524,6 +1524,7 @@ static inline int skb_tailroom(const struct sk_buff *skb)
  *	Return the number of bytes of free space at the tail of an sk_buff
  *	allocated by sk_stream_alloc()
  */
+/* 返回[tail, end - reserved_tail]区间的大小 */
 static inline int skb_availroom(const struct sk_buff *skb)
 {
 	if (skb_is_nonlinear(skb))
@@ -2338,6 +2339,7 @@ static inline bool skb_can_coalesce(struct sk_buff *skb, int i,
 	if (i) {
 		const struct skb_frag_struct *frag = &skb_shinfo(skb)->frags[i - 1];
 
+        /* 必须保证skb中最后一个frag的page就是sk->sk_frag变量记录的page才能合并 */
 		return page == skb_frag_page(frag) &&
 		       off == frag->page_offset + skb_frag_size(frag);
 	}

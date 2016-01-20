@@ -628,6 +628,7 @@ void sock_tx_timestamp(struct sock *sk, __u8 *tx_flags)
 }
 EXPORT_SYMBOL(sock_tx_timestamp);
 
+/* 调用AF特定的sendmsg函数, 如inet_sendmsg() */
 static inline int __sock_sendmsg_nosec(struct kiocb *iocb, struct socket *sock,
 				       struct msghdr *msg, size_t size)
 {
@@ -649,8 +650,10 @@ static inline int __sock_sendmsg(struct kiocb *iocb, struct socket *sock,
 	return err ?: __sock_sendmsg_nosec(iocb, sock, msg, size);
 }
 
+/* BSD socket发送msg, 需要发送的IO block在msg结构体中 */
 int sock_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 {
+    /* TODO： 读读kiocb和sock_iocb结构体 */
 	struct kiocb iocb;
 	struct sock_iocb siocb;
 	int ret;
@@ -1733,7 +1736,7 @@ SYSCALL_DEFINE3(connect, int, fd, struct sockaddr __user *, uservaddr,
 	if (err)
 		goto out_put;
 
-    /* 对于TCP, 调用inet_stream_connect() */
+    /* 对于INET AF, 调用inet_stream_connect() */
 	err = sock->ops->connect(sock, (struct sockaddr *)&address, addrlen,
 				 sock->file->f_flags);
 out_put:
@@ -1832,10 +1835,11 @@ SYSCALL_DEFINE6(sendto, int, fd, void __user *, buff, size_t, len,
 	iov.iov_len = len;
 	msg.msg_name = NULL;
 	msg.msg_iov = &iov;
-	msg.msg_iovlen = 1;
+	msg.msg_iovlen = 1;         /* 普通的send，用到的io block就1个 */
 	msg.msg_control = NULL;
 	msg.msg_controllen = 0;
 	msg.msg_namelen = 0;
+    /* 如果指定了addr,则在进行处理 */
 	if (addr) {
 		err = move_addr_to_kernel(addr, addr_len, &address);
 		if (err < 0)
@@ -1843,9 +1847,11 @@ SYSCALL_DEFINE6(sendto, int, fd, void __user *, buff, size_t, len,
 		msg.msg_name = (struct sockaddr *)&address;
 		msg.msg_namelen = addr_len;
 	}
+    /* 如果BSD socket设置了nonblocking, 则将数据发送设置为don't wait */
 	if (sock->file->f_flags & O_NONBLOCK)
 		flags |= MSG_DONTWAIT;
 	msg.msg_flags = flags;
+    /* 发送msg */
 	err = sock_sendmsg(sock, &msg, len);
 
 out_put:

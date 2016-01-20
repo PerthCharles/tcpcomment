@@ -1850,6 +1850,10 @@ EXPORT_SYMBOL(sock_alloc_send_skb);
 /* On 32bit arches, an skb frag is limited to 2^15 */
 #define SKB_FRAG_PAGE_ORDER	get_order(32768)
 
+/* 如果最后一个页面还有空余，则返回true；
+ * 否则新建一个page，如果分配成功则返回true；
+ * 如果都失败了，则进入memory pressure状态，返回false
+ */
 bool sk_page_frag_refill(struct sock *sk, struct page_frag *pfrag)
 {
 	int order;
@@ -1880,7 +1884,9 @@ bool sk_page_frag_refill(struct sock *sk, struct page_frag *pfrag)
 		}
 	} while (--order >= 0);
 
+    /* 设置memory pressure标记位 */
 	sk_enter_memory_pressure(sk);
+    /* 缩小sndbuf配额 */
 	sk_stream_moderate_sndbuf(sk);
 	return false;
 }
