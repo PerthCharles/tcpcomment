@@ -434,6 +434,7 @@ EXPORT_SYMBOL(tcp_init_sock);
  *	take care of normal races (between the test and the event) and we don't
  *	go look at any of the socket buffers directly.
  */
+/* TODO: poll()应该要了解了解的 */
 unsigned int tcp_poll(struct file *file, struct socket *sock, poll_table *wait)
 {
 	unsigned int mask;
@@ -586,12 +587,14 @@ int tcp_ioctl(struct sock *sk, int cmd, unsigned long arg)
 }
 EXPORT_SYMBOL(tcp_ioctl);
 
+/* 将该skb打上push标记，同时更新pushed_seq指针 */
 static inline void tcp_mark_push(struct tcp_sock *tp, struct sk_buff *skb)
 {
 	TCP_SKB_CB(skb)->tcp_flags |= TCPHDR_PSH;
 	tp->pushed_seq = tp->write_seq;
 }
 
+/* 标记为PUSH的条件a: 已经写了半个max receive window的数据了 */
 static inline bool forced_push(const struct tcp_sock *tp)
 {
 	return after(tp->write_seq, tp->pushed_seq + (tp->max_window >> 1));
@@ -617,6 +620,7 @@ static inline void skb_entail(struct sock *sk, struct sk_buff *skb)
 		tp->nonagle &= ~TCP_NAGLE_PUSH;
 }
 
+/* 如果要处理Out-Of-Band数据，则更新urgent point */
 static inline void tcp_mark_urg(struct tcp_sock *tp, int flags)
 {
 	if (flags & MSG_OOB)
@@ -626,13 +630,18 @@ static inline void tcp_mark_urg(struct tcp_sock *tp, int flags)
 static inline void tcp_push(struct sock *sk, int flags, int mss_now,
 			    int nonagle)
 {
+    /* 判断是否有数据等待发送 */
 	if (tcp_send_head(sk)) {
 		struct tcp_sock *tp = tcp_sk(sk);
 
+        /* 如果没有更多的数据发送(比如在等待mem释放)，则将最后一个SKB标记为PUSH */
+        /* 或者满足标记为PUSH的条件a */
 		if (!(flags & MSG_MORE) || forced_push(tp))
 			tcp_mark_push(tp, tcp_write_queue_tail(sk));
 
+        /* 如果要处理Out-Of-Band数据，则更新urgent point */
 		tcp_mark_urg(tp, flags);
+        /* 如果应用层明确表明了有更多的数据将要发送，则使用NAGLE_CORK标记 */
 		__tcp_push_pending_frames(sk, mss_now,
 					  (flags & MSG_MORE) ? TCP_NAGLE_CORK : nonagle);
 	}
@@ -788,6 +797,9 @@ struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp)
 	return NULL;
 }
 
+/* 计算一个SKB中数据部分的大小，
+ * a. 在不开启GSO时，就是一个MSS
+ * b. 如果开启GSO，则根据sk_gso_max_size而定 */
 static unsigned int tcp_xmit_size_goal(struct sock *sk, u32 mss_now,
 				       int large_allowed)
 {
@@ -1211,7 +1223,12 @@ new_segment:
                      * 2. 如果不支持SG，肯定是要新分配skb的，不能使用paged data
                      *       NOTE: 走这条路径的一种可能：MSS被增大了 */
 					if (i == MAX_SKB_FRAGS || !sg) {
-                        /* TODO： 为什么要打上push标记呢 ? */
+                        /* TODO-DONE： 为什么要打上push标记呢 ?
+                         * 标记为PUSH的条件: 
+                         * a. have written more than half of the so far maximum window size from the late byte marked as pushed
+                         * b. have one full-sized TCP segment ready for transmission
+                         *
+                         * 此时满足条件b */
 						tcp_mark_push(tp, skb);
 						goto new_segment;
 					}
@@ -1236,7 +1253,7 @@ new_segment:
                     /* 如果成功的将数据merge到一个已经分配的page中 */
 					skb_frag_size_add(&skb_shinfo(skb)->frags[i - 1], copy);
 				} else {
-                    /* TODO： 将page挂载到skb中？ */
+                    /* 将page挂载到skb的paged data数组中 */
 					skb_fill_page_desc(skb, i, pfrag->page,
 							   pfrag->offset, copy);
 					get_page(pfrag->page);
@@ -1260,8 +1277,9 @@ new_segment:
 			if (skb->len < max || (flags & MSG_OOB) || unlikely(tp->repair))
 				continue;
 
-            /* 如果需要被push出去，则打上push标记，并且开始发送数据 */
-            /* TODO: push 是神马鬼 ? forced push又是什么内涵 ? */
+            /* 标记为PUSH的条件a */
+            /* 作用：This forces the last segment to be sent out in the window to have a PSH flag set indicating the
+             * receiver to read all the date it has received so far if it has not yet done that. */
 			if (forced_push(tp)) {
 				tcp_mark_push(tp, skb);
 				__tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);

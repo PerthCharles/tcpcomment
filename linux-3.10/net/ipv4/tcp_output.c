@@ -1519,12 +1519,14 @@ static unsigned int tcp_mss_split_point(const struct sock *sk, const struct sk_b
 /* Can at least one segment of SKB be sent right now, according to the
  * congestion window rules?  If so, return how many segments are allowed.
  */
+/* 计算cwnd还允许发送多少数据包 */
 static inline unsigned int tcp_cwnd_test(const struct tcp_sock *tp,
 					 const struct sk_buff *skb)
 {
 	u32 in_flight, cwnd;
 
 	/* Don't be strict about the congestion window for the final FIN.  */
+    /* 如果是最后一个FIN包，则强制允许发送 */
 	if ((TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN) &&
 	    tcp_skb_pcount(skb) == 1)
 		return 1;
@@ -1558,6 +1560,8 @@ static int tcp_init_tso_segs(const struct sock *sk, struct sk_buff *skb,
 }
 
 /* Minshall's variant of the Nagle send check. */
+/* 判断最近的一次发送small packet是否被ack了
+ * 如果被ack了，则返回false */
 static inline bool tcp_minshall_check(const struct tcp_sock *tp)
 {
 	return after(tp->snd_sml, tp->snd_una) &&
@@ -1577,7 +1581,7 @@ static inline bool tcp_minshall_check(const struct tcp_sock *tp)
  * 2. 发送的不是紧急数据，也不带FIN标记
  * 3. skb的大小小于mss_now          -- 不是满负荷的
  * 4. 设置了TCP_CORK
- *    或者没有设置TCP_CORK，但也没有设置TCP_NODELAY，同时网络中存在未被确认的数据
+ *    或者没有设置TCP_CORK，但也没有设置TCP_NODELAY，同时网络中存在未被确认的(小)数据包
  *
  * 可见Nagle被使用的条件是比较苛刻的, 所以一般都是unlikely */
 static inline bool tcp_nagle_check(const struct tcp_sock *tp,
@@ -1617,6 +1621,7 @@ static inline bool tcp_nagle_test(const struct tcp_sock *tp, const struct sk_buf
 }
 
 /* Does at least the first segment of SKB fit into the send window? */
+/* 判断rwnd是否允许至少一个数据包发出去 */
 static bool tcp_snd_wnd_test(const struct tcp_sock *tp,
 			     const struct sk_buff *skb,
 			     unsigned int cur_mss)
@@ -1633,18 +1638,23 @@ static bool tcp_snd_wnd_test(const struct tcp_sock *tp,
  * should be put on the wire right now.  If so, it returns the number of
  * packets allowed by the congestion window.
  */
+/* 返回当前允许发送的数据包的个数 */
 static unsigned int tcp_snd_test(const struct sock *sk, struct sk_buff *skb,
 				 unsigned int cur_mss, int nonagle)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	unsigned int cwnd_quota;
 
+    /* 进行TSO分片信息的初始化, 会更新skb_shinfo(skb)->gso_XXXX相关域 */
 	tcp_init_tso_segs(sk, skb, cur_mss);
 
+    /* 如果nagle算法不允许发送，则返回0 */
 	if (!tcp_nagle_test(tp, skb, cur_mss, nonagle))
 		return 0;
 
+    /* 先计算cwnd的额度 */
 	cwnd_quota = tcp_cwnd_test(tp, skb);
+    /* 在考虑rwnd的额度 */
 	if (cwnd_quota && !tcp_snd_wnd_test(tp, skb, cur_mss))
 		cwnd_quota = 0;
 
@@ -1652,6 +1662,7 @@ static unsigned int tcp_snd_test(const struct sock *sk, struct sk_buff *skb,
 }
 
 /* Test if sending is allowed right now. */
+/* 判断是否可以发送新数据 */
 bool tcp_may_send_now(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
@@ -1954,6 +1965,7 @@ static int tcp_mtu_probe(struct sock *sk)
  * Returns true, if no segments are in flight and we have queued segments,
  * but cannot send anything now because of SWS or another problem.
  */
+/* 负责将数据发送出去 */
 static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			   int push_one, gfp_t gfp)
 {
@@ -2195,6 +2207,7 @@ rearm_timer:
  * TCP_CORK or attempt at coalescing tiny packets.
  * The socket must be locked by the caller.
  */
+/* 发送pending在sndbuf中的数据包 */
 void __tcp_push_pending_frames(struct sock *sk, unsigned int cur_mss,
 			       int nonagle)
 {
@@ -2205,6 +2218,14 @@ void __tcp_push_pending_frames(struct sock *sk, unsigned int cur_mss,
 	if (unlikely(sk->sk_state == TCP_CLOSE))
 		return;
 
+    /* Returns true, if no segments are in flight and we have queued segments,
+     * but cannot send anything now because of SWS or another problem.
+     * return true的条件：
+     * 1. 网络中没有inflight的数据包 &&
+     * 2. sndbuf中有等待发送的数据 &&
+     * 3. sndbuf中的数据包不能发送
+     *
+     * 场景： 对端的接收窗口用完了 zero window */
 	if (tcp_write_xmit(sk, cur_mss, nonagle, 0,
 			   sk_gfp_atomic(sk, GFP_ATOMIC)))
 		tcp_check_probe_timer(sk);

@@ -986,6 +986,7 @@ static __inline__ __u32 tcp_max_burst(const struct tcp_sock *tp)
 }
 
 /* Returns end sequence number of the receiver's advertised window */
+/* 返回rwnd的右边界 */
 static inline u32 tcp_wnd_end(const struct tcp_sock *tp)
 {
 	return tp->snd_una + tp->snd_wnd;
@@ -1004,6 +1005,7 @@ static inline void tcp_check_probe_timer(struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 
+    /* 如果网络中没有inflight数据包，并且没有其他timer等待安装，则安装Zero Window Probe Timer */
 	if (!tp->packets_out && !icsk->icsk_pending)
 		inet_csk_reset_xmit_timer(sk, ICSK_TIME_PROBE0,
 					  icsk->icsk_rto, TCP_RTO_MAX);

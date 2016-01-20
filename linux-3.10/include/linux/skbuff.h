@@ -1382,6 +1382,7 @@ static inline void __skb_fill_page_desc(struct sk_buff *skb, int i,
  *
  * Does not take any additional reference on the fragment.
  */
+/* 将新分配的page，加入到skb的paged data中 */
 static inline void skb_fill_page_desc(struct sk_buff *skb, int i,
 				      struct page *page, int off, int size)
 {
