@@ -828,26 +828,33 @@ static void tcp_update_reordering(struct sock *sk, const int metric,
 /* This must be called before lost_out is incremented */
 static void tcp_verify_retransmit_hint(struct tcp_sock *tp, struct sk_buff *skb)
 {
+    /* 如果没有设置过，或者当前要被标记为lost的skb的序号更小，则更新retransmit_skb_hint */
 	if ((tp->retransmit_skb_hint == NULL) ||
 	    before(TCP_SKB_CB(skb)->seq,
 		   TCP_SKB_CB(tp->retransmit_skb_hint)->seq))
 		tp->retransmit_skb_hint = skb;
 
+    /* 如果lost_out为0，或者当前要被标记为lost的skb的尾序号更大，则更新retransmit_high */
 	if (!tp->lost_out ||
 	    after(TCP_SKB_CB(skb)->end_seq, tp->retransmit_high))
 		tp->retransmit_high = TCP_SKB_CB(skb)->end_seq;
 }
 
+/* 将一个SKB标记为LOST */
 static void tcp_skb_mark_lost(struct tcp_sock *tp, struct sk_buff *skb)
 {
+    /* 如果该SKB没有标记为lost, 也没有被SACK掉，则标记为lost */
 	if (!(TCP_SKB_CB(skb)->sacked & (TCPCB_LOST|TCPCB_SACKED_ACKED))) {
 		tcp_verify_retransmit_hint(tp, skb);
 
+        /* 增加lost_out，标记TCPCB_LOST */
 		tp->lost_out += tcp_skb_pcount(skb);
 		TCP_SKB_CB(skb)->sacked |= TCPCB_LOST;
 	}
 }
 
+/* 功能与tcp_skb_mark_lost()类似，就是在更新retrans hint的时候，不需要满足判断条件
+ * TODO： 什么情况下会用该函数，而不用tcp_skb_mark_lost() ？ */
 static void tcp_skb_mark_lost_uncond_verify(struct tcp_sock *tp,
 					    struct sk_buff *skb)
 {
@@ -1622,7 +1629,8 @@ tcp_sacktag_write_queue(struct sock *sk, const struct sk_buff *ack_skb,
 	state.flag = 0; /* 该变量为函数返回值，初始化为0 */
 	state.reord = tp->packets_out;
 
-    /* (一个窗口内)如果之前没收到SACK，则要 TODO 理解highest_sack含义 */
+    /* (一个窗口内)如果之前没收到SACK，则要重置facked_out和highest sack
+     * TODO-DONE 理解highest_sack含义:  最大的已经被SACK的序号 */
 	if (!tp->sacked_out) {
 		if (WARN_ON(tp->fackets_out))
 			tp->fackets_out = 0;
@@ -2035,6 +2043,7 @@ static inline int tcp_fackets_out(const struct tcp_sock *tp)
  * Instead, with FACK TCP uses fackets_out that includes both SACKed
  * segments up to the highest received SACK block so far and holes in
  * between them.
+ * 从这段英文注释可以看出： fackets_out包括[snd_una, highest sack] 区间所有的数据包，不管它是SACKed，还是一个hole
  *
  * With reordering, holes may still be in flight, so RFC3517 recovery
  * uses pure sacked_out (total number of SACKed segments) even though
@@ -2046,7 +2055,8 @@ static inline int tcp_fackets_out(const struct tcp_sock *tp)
 /* 推测出有多少个dupack */
 static inline int tcp_dupack_heuristics(const struct tcp_sock *tp)
 {
-    /* TODO: sacked_out为什么还要加1 ？ 是因为判断返回值与reorderig大小的时候用的是>, 而不是>=吗？ */
+    /* TODO-DONE: sacked_out为什么还要加1 ？
+     * 答：是因为判断返回值与reorderig大小的时候用的是>, 而不是>=。感觉这个地方好肤浅。。。 */
 	return tcp_is_fack(tp) ? tp->fackets_out : tp->sacked_out + 1;
 }
 
@@ -2078,12 +2088,14 @@ static bool tcp_pause_early_retransmit(struct sock *sk, int flag)
 	return true;
 }
 
+/* 判断SKB的发送时间是否已经超过了RTO timer的时间 */
 static inline int tcp_skb_timedout(const struct sock *sk,
 				   const struct sk_buff *skb)
 {
 	return tcp_time_stamp - TCP_SKB_CB(skb)->when > inet_csk(sk)->icsk_rto;
 }
 
+/* 判断head skb的发送时间是否超过了RTO timer的时间 */
 static inline int tcp_head_timedout(const struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
@@ -2263,29 +2275,39 @@ static bool tcp_time_to_recover(struct sock *sk, int flag)
  * right away (because a retransmission with a larger timestamp blocks the
  * loop from advancing). -ij
  */
+/* 将重传队列中，所有"已发送时间"超过RTO timer的数据包标记为lost */
+/* "已发送时间"定义：(now - skb->when > rto)
+ */
 static void tcp_timeout_skbs(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *skb;
 
+    /* 如果不支持fast, 或者head skb的已发送时间还没有超过RTO timer
+     * 则直接返回 */
 	if (!tcp_is_fack(tp) || !tcp_head_timedout(sk))
 		return;
 
+    /* scoreboard_skb_hint指向scoreboard中，根据tcp_skb_timeout()判断为lost的最后一个skb位置 */
 	skb = tp->scoreboard_skb_hint;
+    /* 如果没有设置过，则指向重传队列的队首 */
 	if (tp->scoreboard_skb_hint == NULL)
 		skb = tcp_write_queue_head(sk);
 
 	tcp_for_write_queue_from(skb, sk) {
 		if (skb == tcp_send_head(sk))
 			break;
+        /* 如果该skb已发送时间超过RTO timer，则可以停止标记了 */
 		if (!tcp_skb_timedout(sk, skb))
 			break;
 
+        /* 如果该skb已发送时间超过RTO timer(now - skb->when > rto), 则将数据包标记为LOST ! */
 		tcp_skb_mark_lost(tp, skb);
 	}
 
 	tp->scoreboard_skb_hint = skb;
 
+    /* 确认sacked_out + lost_out <= packet_out */
 	tcp_verify_left_out(tp);
 }
 
@@ -2303,11 +2325,14 @@ static void tcp_mark_head_lost(struct sock *sk, int packets, int mark_head)
 	int err;
 	unsigned int mss;
 	/* Use SACK to deduce losses of new sequences sent during recovery */
+    /* 默认开启SACK，所以loss_high最多能到snd_nxt */
 	const u32 loss_high = tcp_is_sack(tp) ?  tp->snd_nxt : tp->high_seq;
 
 	WARN_ON(packets > tp->packets_out);
+    /* lost_skb_hint标记从哪个位置开始标记为lost */
 	if (tp->lost_skb_hint) {
 		skb = tp->lost_skb_hint;
+        /* lost_cnt_hint记录已经被标记为lost的个数 */
 		cnt = tp->lost_cnt_hint;
 		/* Head already handled? */
 		if (mark_head && skb != tcp_write_queue_head(sk))
@@ -2322,23 +2347,33 @@ static void tcp_mark_head_lost(struct sock *sk, int packets, int mark_head)
 			break;
 		/* TODO: do this better */
 		/* this is not the most efficient way to do this... */
+        /* 确实应该找到更好的办法更新这两个hint，每进一次循环都更新也是醉了 */
 		tp->lost_skb_hint = skb;
 		tp->lost_cnt_hint = cnt;
 
+        /* 最多能将[snd_una, loss_high]区间内的SKB标记为lost */
 		if (after(TCP_SKB_CB(skb)->end_seq, loss_high))
 			break;
 
 		oldcnt = cnt;
+        /* 更新cnt值，即标记为lost的个数 */
+        /* 默认开启fack，所以cnt默认会递增；
+         * 如果后续fack被disable了，SACK开启工作。 要记住packets参数的含义:
+         *     the maximum SACKed segments to pass before reaching this limit
+         * 即使用SACK时，packet表示一路标记，直到遍历超过packets个SACKed SKB时停止 */
 		if (tcp_is_fack(tp) || tcp_is_reno(tp) ||
 		    (TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_ACKED))
 			cnt += tcp_skb_pcount(skb);
 
 		if (cnt > packets) {
+            /* 如果仅使用了SACK机制，也直接break */
+            /* 在不需要分片的情况下，oldcnt == packets肯定成立，从而break出去了 */
 			if ((tcp_is_sack(tp) && !tcp_is_fack(tp)) ||
 			    (TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_ACKED) ||
 			    (oldcnt >= packets))
 				break;
 
+            /* 处理边界情况：需要切片 */
 			mss = skb_shinfo(skb)->gso_size;
 			err = tcp_fragment(sk, skb, (packets - oldcnt) * mss, mss);
 			if (err < 0)
@@ -2348,6 +2383,7 @@ static void tcp_mark_head_lost(struct sock *sk, int packets, int mark_head)
 
 		tcp_skb_mark_lost(tp, skb);
 
+        /* 如果只需要将head标记为lost，则至此就可以break了 */
 		if (mark_head)
 			break;
 	}
@@ -2355,28 +2391,42 @@ static void tcp_mark_head_lost(struct sock *sk, int packets, int mark_head)
 }
 
 /* Account newly detected lost packet(s) */
+/* 更新scoreboard */
 static void tcp_update_scoreboard(struct sock *sk, int fast_rexmit)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-    /* 如果不支持sack，则标记1个 */
+    /* 如果不支持sack，则仅将head标记为lost */
 	if (tcp_is_reno(tp)) {
 		tcp_mark_head_lost(sk, 1, 1);
 	} else if (tcp_is_fack(tp)) {
-    /* 如果支持fack*/
+        /* 如果支持fack, 则将[snd_una, highest sacked seq]之间的所有未被(选择)确认的数据包认为已经丢弃
+         * 当然，还需要容忍一定程度的reordering 
+         * sysctl_tcp_fack选项已经默认开启 */
+        /* reordering是当前已经检测数来的reordering数量，默认为3
+         * fackest_out是[snd_una, highest sack]区间内所有的数据包的个数
+         */
 		int lost = tp->fackets_out - tp->reordering;
 		if (lost <= 0)
 			lost = 1;
+        /* 使用fack时，不是直接mark head, 而是mark lost个数，所以第三个参数为0 */
 		tcp_mark_head_lost(sk, lost, 0);
 	} else {
-    /* 如果支持sack*/
+        /* 如果支持sack */
+        /* sacked_out表示被SACKED的skb的个数 */
+        /* TODO-DONE: 这里会出现sacked_upto == 0的情况，这样即使设置了fast_rexmit，
+         * 也还是会调用tcp_mark_head_lost(sk, 0, 0) 这样的结果是什么？
+         * 答：使用SACK时，packets参数(即sacked_upto)表示的含义是标记lost时，最多能够遇到的SACKed SKB的个数
+         * 所以如果sacked_upto的值为0，则表示将[snd_una, lowest sack seq]之间的所有块都标记为LOST!!! */
 		int sacked_upto = tp->sacked_out - tp->reordering;
 		if (sacked_upto >= 0)
 			tcp_mark_head_lost(sk, sacked_upto, 0);
 		else if (fast_rexmit)
+            /* 如果标记为快速重传，则将head标记为lost */
 			tcp_mark_head_lost(sk, 1, 1);
 	}
 
+    /* 将重传队列中，已发送时间超过RTO的skb也设置为LOST */
 	tcp_timeout_skbs(sk);
 }
 

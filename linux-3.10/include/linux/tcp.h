@@ -251,9 +251,11 @@ struct tcp_sock {
 	u32	tso_deferred;       /* 上次TSO延迟发送的时间戳, 也用作判断是否已经执行了TSO defer */
 
 	/* from STCP, retrans queue hinting */
+    /* lost_skb_hint标记从哪个位置开始标记为lost */
 	struct sk_buff* lost_skb_hint;
+    /* scoreboard_skb_hint指向scoreboard中，根据tcp_skb_timeout()判断为lost的最后一个skb位置 */
 	struct sk_buff *scoreboard_skb_hint;
-	struct sk_buff *retransmit_skb_hint;    /* 表示将要重传的起始包 */
+	struct sk_buff *retransmit_skb_hint;    /* 表示将要重传的起始包(第一个包) */
 
 	struct sk_buff_head	out_of_order_queue; /* Out of order segments go here */
 
@@ -269,6 +271,7 @@ struct tcp_sock {
 					 * sacked_out > 0)
 					 */
 
+    /* lost_cnt_hint记录已经被标记为lost的个数 */
 	int     lost_cnt_hint;
     /* 记录被标记为TCPCB_LOST标记的最大的序号 
      * 一般情况下，只有[snd_una, retransmit_high]区间内的数据包需要进行重传 
