@@ -508,6 +508,7 @@ new_measure:
 	tp->rcv_rtt_est.time = tcp_time_stamp;
 }
 
+/* TODO: rcv rtt也有估计吗? */
 static inline void tcp_rcv_rtt_measure_ts(struct sock *sk,
 					  const struct sk_buff *skb)
 {
@@ -522,6 +523,7 @@ static inline void tcp_rcv_rtt_measure_ts(struct sock *sk,
  * This function should be called every time data is copied to user space.
  * It calculates the appropriate TCP receive buffer space.
  */
+/* TODO: */
 void tcp_rcv_space_adjust(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -3980,7 +3982,7 @@ void tcp_parse_options(const struct sk_buff *skb,
 }
 EXPORT_SYMBOL(tcp_parse_options);
 
-/* 解析一个对其了的timestamp选项，成功返回true */
+/* 解析一个对齐了的timestamp选项，成功返回true */
 static bool tcp_parse_aligned_timestamp(struct tcp_sock *tp, const struct tcphdr *th)
 {
     /* th指向tcp包头的起始位置，而tcphdr结构体是不包含TCP选项的。
@@ -4489,6 +4491,7 @@ static int tcp_try_rmem_schedule(struct sock *sk, struct sk_buff *skb,
  * Better try to coalesce them right now to avoid future collapses.
  * Returns true if caller should free @from instead of queueing it
  */
+/* 尝试将from合并到to中，合并成功返回true, 失败返回false */
 static bool tcp_try_coalesce(struct sock *sk,
 			     struct sk_buff *to,
 			     struct sk_buff *from,
@@ -4510,6 +4513,7 @@ static bool tcp_try_coalesce(struct sock *sk,
 
 	atomic_add(delta, &sk->sk_rmem_alloc);
 	sk_mem_charge(sk, delta);
+    /* TCP接收缓存合并skb成功的次数 */
 	NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPRCVCOALESCE);
 	TCP_SKB_CB(to)->end_seq = TCP_SKB_CB(from)->end_seq;
 	TCP_SKB_CB(to)->ack_seq = TCP_SKB_CB(from)->ack_seq;
@@ -4639,6 +4643,7 @@ end:
 		skb_set_owner_r(skb, sk);
 }
 
+/* 将数据放到receive queue中 */
 static int __must_check tcp_queue_rcv(struct sock *sk, struct sk_buff *skb, int hdrlen,
 		  bool *fragstolen)
 {
@@ -4646,9 +4651,11 @@ static int __must_check tcp_queue_rcv(struct sock *sk, struct sk_buff *skb, int 
 	struct sk_buff *tail = skb_peek_tail(&sk->sk_receive_queue);
 
 	__skb_pull(skb, hdrlen);
+    /* 尝试将skb合并到tail中 */
 	eaten = (tail &&
 		 tcp_try_coalesce(sk, tail, skb, fragstolen)) ? 1 : 0;
 	tcp_sk(sk)->rcv_nxt = TCP_SKB_CB(skb)->end_seq;
+    /* 如果没有成功，则将skb挂到receive queue中 */
 	if (!eaten) {
 		__skb_queue_tail(&sk->sk_receive_queue, skb);
 		skb_set_owner_r(skb, sk);
@@ -5294,6 +5301,7 @@ static void tcp_urg(struct sock *sk, struct sk_buff *skb, const struct tcphdr *t
 	}
 }
 
+/* 将skb中的数据拷贝到用户态的iovec中 */
 static int tcp_copy_to_iovec(struct sock *sk, struct sk_buff *skb, int hlen)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -5477,9 +5485,11 @@ discard:
  *	- Data is sent in both directions. Fast path only supports pure senders
  *	  or pure receivers (this means either the sequence number or the ack
  *	  value must stay constant)
- *	    -- TODO
+ *	    -- TODO-DONE
  *	        疑问1：为什么要限制数据单向发送？
+ *	            -- 这样有一方的ack seq就不会改变
  *	        疑问2：具体是如何做到限制数据单向发送的？是严格的完全单向，还是一段时间内是单向的？
+ *	            -- either the sequence number or the ack value must stay constant
  *	- Unexpected TCP option.
  *
  *	When these conditions are not satisfied it drops into a standard
@@ -5520,8 +5530,10 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 	 *	 space for instance)
 	 *	PSH flag is ignored.
 	 */
-
-    /* TODO: pred_flag含义？ tcp_flag_word()含义？ */
+    /* TODO-DONE: pred_flag含义？ tcp_flag_word()含义？ */
+    /* tcp_flag_word()是直接提取出TCP头部中的header len + reserved + flag + rwnd 这四个字节，
+     * pred_flag是之前这四个字节的缓存 */ 
+    /* 如果满足这个调节，说明完全没有异常发生，就直接可以处理该数据包了 */
 	if ((tcp_flag_word(th) & TCP_HP_BITS) == tp->pred_flags &&
 	    TCP_SKB_CB(skb)->seq == tp->rcv_nxt &&                  /* skb的序号刚好就是期望收到的序号 */
 	    !after(TCP_SKB_CB(skb)->ack_seq, tp->snd_nxt)) {        /* skb的尾序号不超过snd_nxt，算是合法性检测 */
@@ -5535,6 +5547,7 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 		/* Check timestamp */
         /* 如果刚好仅使用了timestamp选项, 因为在"TCP正常包传输"过程中，TCP包仅
          * 可能包括timestamp选项。SACK_PERMITTED，WIN_SACLE都只能在三次握手时使用 */
+        /* 而在正常的数据传输过程中，只会有timestamp数据包 */
 		if (tcp_header_len == sizeof(struct tcphdr) + TCPOLEN_TSTAMP_ALIGNED) {
 			/* No? Slow path! */
             /* 如果解析失败，则说明带了选项，又不是一个正常的timestamp选项。
@@ -5587,6 +5600,10 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 			int copied_early = 0;
 			bool fragstolen = false;
 
+            /* 如果receive queue中的所有数据都已经被用户处理完了,
+             * 并且，
+             * SKB中的数据不超过用户请求的数据长度
+             *   -- 第二个判断的目的：skb中的数据要么全部拷贝到user space, 要不就不要动它。否则拷贝一半留下一半非常麻烦 */
 			if (tp->copied_seq == tp->rcv_nxt &&
 			    len - tcp_header_len <= tp->ucopy.len) {
 #ifdef CONFIG_NET_DMA
@@ -5597,11 +5614,15 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 					eaten = 1;
 				}
 #endif
+                /* 该函数可能从用户态recv()触发调用，也可能在SOFT IRQ模式下调用
+                 * 要想将数据拷贝到user space，只能是用户调用recv()才会将数据拷贝到用户态的iovec */
 				if (tp->ucopy.task == current &&
 				    sock_owned_by_user(sk) && !copied_early) {
 					__set_current_state(TASK_RUNNING);
 
+                    /* 将skb中的数据拷贝到用户态的iovec中 */
 					if (!tcp_copy_to_iovec(sk, skb, tcp_header_len))
+                        /* eaten表示skb数据已经拷贝到用户态iovec了，不需要放到receive queue中了 */
 						eaten = 1;
 				}
 				if (eaten) {
@@ -5615,17 +5636,22 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 
 					tcp_rcv_rtt_measure_ts(sk, skb);
 
+                    /* 去掉TCP 头部 */
 					__skb_pull(skb, tcp_header_len);
 					tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq;
+                    /* 数据直接放到了user space的iovec, 计数器增加 */
 					NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPHPHITSTOUSER);
 				}
 				if (copied_early)
 					tcp_cleanup_rbuf(sk, skb->len);
 			}
+            /* 如果数据包没有被直接放到user space */
 			if (!eaten) {
+                /* 首先检查checksum */
 				if (tcp_checksum_complete_user(sk, skb))
 					goto csum_error;
 
+                /* forward alloc内存不足，此时fast path需要特殊处理 */
 				if ((int)skb->truesize > sk->sk_forward_alloc)
 					goto step5;
 
@@ -5640,15 +5666,21 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 
 				tcp_rcv_rtt_measure_ts(sk, skb);
 
+                /* skb通过fast path形式，加入到了receive queue中
+                 * 理论上HP计数器越多越好!!! */
 				NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPHPHITS);
 
 				/* Bulk data transfer: receiver */
+                /* 此时返回的eaten表示skb是否与接收队列的尾skb合并成功 */
 				eaten = tcp_queue_rcv(sk, skb, tcp_header_len,
 						      &fragstolen);
 			}
 
+            /* TODO： 收到数据后，要进行的动作 */
 			tcp_event_data_recv(sk, skb);
 
+            /* 如果接收到的ack与snd_una不相等，则要调用tcp_ack进行处理
+             * 场景: 上一个发送的skb带有数据(如client request内容), 之后开始收数据 */
 			if (TCP_SKB_CB(skb)->ack_seq != tp->snd_una) {
 				/* Well, only one small jumplet in fast path... */
 				tcp_ack(sk, skb, FLAG_DATA);
@@ -5667,26 +5699,30 @@ no_ack:
 #endif
 			if (eaten)
 				kfree_skb_partial(skb, fragstolen);
+            /* 触发data ready的回调函数, 如sock_def_readable() */
 			sk->sk_data_ready(sk, 0);
 			return 0;
 		}
 	}
 
 slow_path:
+    /* 进入慢速路径的处理流程 */
 	if (len < (th->doff << 2) || tcp_checksum_complete_user(sk, skb))
 		goto csum_error;
 
+    /* established状态收到的包，必须有ack或rst */
 	if (!th->ack && !th->rst)
 		goto discard;
 
 	/*
 	 *	Standard slow path.
 	 */
-
+    /* 检查数据包合法性 */
 	if (!tcp_validate_incoming(sk, skb, th, 1))
 		return 0;
 
 step5:
+    /* 处理ack */
 	if (tcp_ack(sk, skb, FLAG_SLOWPATH | FLAG_UPDATE_TS_RECENT) < 0)
 		goto discard;
 

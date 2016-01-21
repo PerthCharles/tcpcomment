@@ -1274,6 +1274,9 @@ new_segment:
 			if ((seglen -= copy) == 0 && iovlen == 0)
 				goto out;
 
+            /* 如果是发送OOB数据，we get out of inner loop here because seglen has become zero here
+             * since we had only 1 byte of data to copy. For the same reasion, we get out of the outer
+             * loop. 之后会调用tcp_push()发送数据 */
 			if (skb->len < max || (flags & MSG_OOB) || unlikely(tp->repair))
 				continue;
 
@@ -1403,6 +1406,7 @@ static int tcp_peek_sndq(struct sock *sk, struct msghdr *msg, int len)
  * calculation of whether or not we must ACK for the sake of
  * a window update.
  */
+/* TODO： */
 void tcp_cleanup_rbuf(struct sock *sk, int copied)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -1461,17 +1465,21 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
 		tcp_send_ack(sk);
 }
 
+/* 处理prequeue中的数据包 */
 static void tcp_prequeue_process(struct sock *sk)
 {
 	struct sk_buff *skb;
 	struct tcp_sock *tp = tcp_sk(sk);
 
+    /* 该计数器表示，被用户调用recv()在process conext下处理的prequeue中数据包的个数 */
+    /* 看STATS_USER标记就知道了，哈哈. 本质上它与NET_INC_STATS()没有区别，多增加一个USER标记只是为了提高可读性 */
 	NET_INC_STATS_USER(sock_net(sk), LINUX_MIB_TCPPREQUEUED);
 
 	/* RX process wants to run with disabled BHs, though it is not
 	 * necessary */
 	local_bh_disable();
 	while ((skb = __skb_dequeue(&tp->ucopy.prequeue)) != NULL)
+        /* 调用tcp_v4_do_rcv()处理函数 */
 		sk_backlog_rcv(sk, skb);
 	local_bh_enable();
 
@@ -1624,7 +1632,7 @@ EXPORT_SYMBOL(tcp_read_sock);
  *	tricks with *seq access order and skb->users are not required.
  *	Probably, code can be easily improved even more.
  */
-
+/* TCP协议的recv处理函数 */
 int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		size_t len, int nonblock, int flags, int *addr_len)
 {
@@ -1641,15 +1649,19 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	struct sk_buff *skb;
 	u32 urg_hole = 0;
 
+    /* 给sk上锁 */
 	lock_sock(sk);
 
 	err = -ENOTCONN;
+    /* LISTEN状态的socket是不能recv的 */
 	if (sk->sk_state == TCP_LISTEN)
 		goto out;
 
+    /* 确定recv()的超时时间 */
 	timeo = sock_rcvtimeo(sk, nonblock);
 
 	/* Urgent data needs to be handled specially. */
+    /* 特殊处理OOB数据 */
 	if (flags & MSG_OOB)
 		goto recv_urg;
 
@@ -1668,12 +1680,15 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		/* 'common' recv queue MSG_PEEK-ing */
 	}
 
+    /* 获取当前已经读到数据位置 */
 	seq = &tp->copied_seq;
 	if (flags & MSG_PEEK) {
+        /* 如果是peek模式，则将seq指向peek_seq, 这样就不会改变copied_seq了 */
 		peek_seq = tp->copied_seq;
 		seq = &peek_seq;
 	}
 
+    /* 根据是否是waitall模式，确定本次recv至少需要接收多少字节 */
 	target = sock_rcvlowat(sk, flags & MSG_WAITALL, len);
 
 #ifdef CONFIG_NET_DMA
@@ -1713,21 +1728,27 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 		/* Next get a buffer. */
 
+        /* 遍历receive queue */
 		skb_queue_walk(&sk->sk_receive_queue, skb) {
 			/* Now that we have two receive queues this
 			 * shouldn't happen.
 			 */
+            /* 将要读取的数据seq必须大于等于该skb的起始序号 */
 			if (WARN(before(*seq, TCP_SKB_CB(skb)->seq),
 				 "recvmsg bug: copied %X seq %X rcvnxt %X fl %X\n",
 				 *seq, TCP_SKB_CB(skb)->seq, tp->rcv_nxt,
 				 flags))
 				break;
 
+            /* skb读到了哪个位置 */
 			offset = *seq - TCP_SKB_CB(skb)->seq;
+            /* syn标记会占用一个seq，所以要减掉 */
 			if (tcp_hdr(skb)->syn)
 				offset--;
+            /* 要读取的位置在skb中 */
 			if (offset < skb->len)
 				goto found_ok_skb;
+            /* fin也占用一个字节，所以执行到这里，就只剩下fin这种情况了 */
 			if (tcp_hdr(skb)->fin)
 				goto found_fin_ok;
 			WARN(!(flags & MSG_PEEK),
@@ -1736,21 +1757,26 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		}
 
 		/* Well, if we have backlog, try to process it now yet. */
+        /* 执行到这里，说明receive queue已经没有数据了，那么接着处理backlog queue */
 
+        /* 如果已经接收了最少必须接收的数据量，并且backlog queue也没有数据需要处理，则可以break 返回了 */
 		if (copied >= target && !sk->sk_backlog.tail)
 			break;
 
 		if (copied) {
+            /* 只要已经copied了数据，即使有异常发生，也是返回copied的字节数。异常会在下一个recv()调用是处理 */
 			if (sk->sk_err ||
 			    sk->sk_state == TCP_CLOSE ||
 			    (sk->sk_shutdown & RCV_SHUTDOWN) ||
 			    !timeo ||
 			    signal_pending(current))
 				break;
+        /* 如果没有copied任何数据，发现异常要及时处理 */
 		} else {
 			if (sock_flag(sk, SOCK_DONE))
 				break;
 
+            /* 返回错误 */
 			if (sk->sk_err) {
 				copied = sock_error(sk);
 				break;
@@ -1770,6 +1796,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 				break;
 			}
 
+            /* 超时了，通知应用程序下次来尝试 */
 			if (!timeo) {
 				copied = -EAGAIN;
 				break;
@@ -1781,16 +1808,20 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			}
 		}
 
+        /* 没有异常发生，而且拷贝了数据到用户态，那么需要清理rcvbuf */
 		tcp_cleanup_rbuf(sk, copied);
 
+        /* 处理prequeue */
 		if (!sysctl_tcp_low_latency && tp->ucopy.task == user_recv) {
 			/* Install new reader */
+            /* 安装新的读者进程到tp中 */
 			if (!user_recv && !(flags & (MSG_TRUNC | MSG_PEEK))) {
 				user_recv = current;
 				tp->ucopy.task = user_recv;
 				tp->ucopy.iov = msg->msg_iov;
 			}
 
+            /* 标记用户还需要copy多少字节 */
 			tp->ucopy.len = len;
 
 			WARN_ON(tp->copied_seq != tp->rcv_nxt &&
@@ -1801,6 +1832,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			 * order will be broken at second iteration.
 			 * More elegant solution is required!!!
 			 *
+             * 谨记这一段注释!
 			 * Look: we have the following (pseudo)queues:
 			 *
 			 * 1. packets in flight
@@ -1822,6 +1854,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			 * is not empty. It is more elegant, but eats cycles,
 			 * unfortunately.
 			 */
+            /* 如果prequeue不为空，则应该在处理backlog queue之前先处理prequeue */
 			if (!skb_queue_empty(&tp->ucopy.prequeue))
 				goto do_prequeue;
 
@@ -1838,11 +1871,13 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 				dma_async_issue_pending(tp->ucopy.dma_chan);
 		}
 #endif
+        /* 如果已经拷贝了要求的最小字节数, 则释放sk, 处理backlog queue。 */
 		if (copied >= target) {
 			/* Do not sleep, just process backlog. */
 			release_sock(sk);
 			lock_sock(sk);
 		} else
+            /* 否则就等待数据 */
 			sk_wait_data(sk, &timeo);
 
 #ifdef CONFIG_NET_DMA
@@ -1850,6 +1885,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		tp->ucopy.wakeup = 0;
 #endif
 
+        /* 如果有用户进程在等数据数据，则立马将可用的数据拷贝过去 */
 		if (user_recv) {
 			int chunk;
 
@@ -1857,7 +1893,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 			if ((chunk = len - tp->ucopy.len) != 0) {
 				NET_ADD_STATS_USER(sock_net(sk), LINUX_MIB_TCPDIRECTCOPYFROMBACKLOG, chunk);
-				len -= chunk;
+				len -= chunk;   
 				copied += chunk;
 			}
 
@@ -1867,7 +1903,9 @@ do_prequeue:
 				tcp_prequeue_process(sk);
 
 				if ((chunk = len - tp->ucopy.len) != 0) {
+                    /* 直接从prequeue拷贝数据到了user space */
 					NET_ADD_STATS_USER(sock_net(sk), LINUX_MIB_TCPDIRECTCOPYFROMPREQUEUE, chunk);
+                    /* 说白了就是len = ucopy.len 即还需要拷贝多少字节 */
 					len -= chunk;
 					copied += chunk;
 				}
@@ -1884,7 +1922,9 @@ do_prequeue:
 
 	found_ok_skb:
 		/* Ok so how much can we use? */
+        /* used表示当前skb还有多少可供读取，这名字取得很不好! */
 		used = skb->len - offset;
+        /* 最多只需要读取用户请求的len长度 */
 		if (len < used)
 			used = len;
 
@@ -1936,6 +1976,7 @@ do_prequeue:
 			} else
 #endif
 			{
+                /* 将skb中的数据拷贝到iovec中 */
 				err = skb_copy_datagram_iovec(skb, offset,
 						msg->msg_iov, used);
 				if (err) {
@@ -1947,6 +1988,7 @@ do_prequeue:
 			}
 		}
 
+        /* 拷贝数据到user space后，更新各个参数 */
 		*seq += used;
 		copied += used;
 		len -= used;
@@ -1958,15 +2000,21 @@ skip_copy:
 			tp->urg_data = 0;
 			tcp_fast_path_check(sk);
 		}
+        /* 如果skb还有数据没有读完，则继续循环读取 */
 		if (used + offset < skb->len)
 			continue;
 
+        /* 如果该skb的数据度已经读取完了 */
+
+        /* 处理fin标记 */
 		if (tcp_hdr(skb)->fin)
 			goto found_fin_ok;
 		if (!(flags & MSG_PEEK)) {
+            /* 如果不是peek，则可以将被读完的skb释放掉 */
 			sk_eat_skb(sk, skb, copied_early);
 			copied_early = false;
 		}
+        /* 接着处理 */
 		continue;
 
 	found_fin_ok:
@@ -2023,6 +2071,7 @@ out:
 	return err;
 
 recv_urg:
+    /* TODO: 接收urg数据 */
 	err = tcp_recv_urg(sk, msg, len, flags);
 	goto out;
 

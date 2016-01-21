@@ -629,7 +629,8 @@ int tcp_v4_gso_send_check(struct sk_buff *skb)
  *		arrived with segment.
  *	Exception: precedence violation. We do not implement it in any case.
  */
-
+/* TODO： 看看这个函数 
+ * TODO: 整理发送reset的情况 */
 static void tcp_v4_send_reset(struct sock *sk, struct sk_buff *skb)
 {
 	const struct tcphdr *th = tcp_hdr(skb);
@@ -1910,6 +1911,7 @@ static __sum16 tcp_v4_checksum_init(struct sk_buff *skb)
  * This is because we cannot sleep with the original spinlock
  * held.
  */
+/* TCP层处理收到的skb的核心处理函数, 此时用户没有占用sk */
 int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 {
 	struct sock *rsk;   /* 应该是reset socket的缩写，表示由谁发送reset包 */
@@ -1925,6 +1927,7 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 		goto discard;
 #endif
 
+    /* 大部分情况下都是estab状态的sk接收数据，所以属于fast path */
 	if (sk->sk_state == TCP_ESTABLISHED) { /* Fast path */
 		struct dst_entry *dst = sk->sk_rx_dst;
 
@@ -2048,6 +2051,10 @@ void tcp_v4_early_demux(struct sk_buff *skb)
  * see, why it failed. 8)8)				  --ANK
  *
  */
+/* 如果开启low_latency，则不会放入prequeue;
+ * 如果不开启(默认不开启），只会在如下情况是才会将数据放入prequeue
+ *     when we are waiting for a socket's wait queue in tcp_data_wait() called from tcp_recvmsg()
+ */
 bool tcp_prequeue(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -2059,26 +2066,42 @@ bool tcp_prequeue(struct sock *sk, struct sk_buff *skb)
 	if (sysctl_tcp_low_latency || !tp->ucopy.task)
 		return false;
 
+    /* 如果prequeue中没有数据等待处理，而新来的这个skb有没有携带应用数据，那么没有必要放到prequeue中 */
 	if (skb->len <= tcp_hdrlen(skb) &&
 	    skb_queue_len(&tp->ucopy.prequeue) == 0)
 		return false;
 
 	skb_dst_force(skb);
+    /* 将skb放到prequeue中 */
 	__skb_queue_tail(&tp->ucopy.prequeue, skb);
 	tp->ucopy.memory += skb->truesize;
+    /* 应该情况下，不会在interrupt context下具体的处理数据包，应为这样会比较耗时；
+     * 但是如果数据量已经超过rcvbuf上限的话，就必须得开始处理了 */
+    /* 这种情况发送的场景: packets are coming fast enough and the receiving process is not getting
+     * scheduled to process the prequeue 
+     * 说白了就是数据包来的太快，用户处理进行还没有来得及处理。
+     * 从这个层面上来讲，LINUX_MIB_TCPPREQUEUEDROPPED计数器一定程度上反应了数据包处理的瓶颈在哪里:
+     *    该计数器小，说明CPU调度应用处理数据包一般都很及时；
+     *    如果该计数器很大，说明CPU调度应用程序很慢。需要看看是什么问题了! */
 	if (tp->ucopy.memory > sk->sk_rcvbuf) {
 		struct sk_buff *skb1;
 
 		BUG_ON(sock_owned_by_user(sk));
 
+        /* 调用tcp_v4_do_rcv()依次将prequeue中的skb处理掉 */
 		while ((skb1 = __skb_dequeue(&tp->ucopy.prequeue)) != NULL) {
 			sk_backlog_rcv(sk, skb1);
+            /* 该计数器的含义: 放到prequeue中的skb，却由于rcvbuf被用完，依然调用tcp_v4_do_rcv()处理掉的次数
+             * 计数器名字的含义: prequeue用满了，'DROP'到tcp_v4_do_rcv()去处理。
+             * 并不是直接的被discard ! */
 			NET_INC_STATS_BH(sock_net(sk),
 					 LINUX_MIB_TCPPREQUEUEDROPPED);
 		}
 
+        /* prequeue被清空了 */
 		tp->ucopy.memory = 0;
 	} else if (skb_queue_len(&tp->ucopy.prequeue) == 1) {
+        /* 如果是第一个放到prequeue中的skb，需要通知用户态程序该睡醒了 */
 		wake_up_interruptible_sync_poll(sk_sleep(sk),
 					   POLLIN | POLLRDNORM | POLLRDBAND);
 		if (!inet_csk_ack_scheduled(sk))
@@ -2093,7 +2116,7 @@ EXPORT_SYMBOL(tcp_prequeue);
 /*
  *	From tcp_input.c
  */
-
+/* TCP层接收数据的入口处理函数 */
 int tcp_v4_rcv(struct sk_buff *skb)
 {
 	const struct iphdr *iph;
@@ -2142,9 +2165,11 @@ int tcp_v4_rcv(struct sk_buff *skb)
 		goto no_tcp_socket;
 
 process:
+    /* 如果是处于TW状态的socket收到数据包，则要特殊处理 */
 	if (sk->sk_state == TCP_TIME_WAIT)
 		goto do_time_wait;
 
+    /* 检查TTL */
 	if (unlikely(iph->ttl < inet_sk(sk)->min_ttl)) {
 		NET_INC_STATS_BH(net, LINUX_MIB_TCPMINTTLDROP);
 		goto discard_and_relse;
@@ -2152,6 +2177,7 @@ process:
 
 	if (!xfrm4_policy_check(sk, XFRM_POLICY_IN, skb))
 		goto discard_and_relse;
+    /* TODO: netfilter 相关 */
 	nf_reset(skb);
 
 	if (sk_filter(sk, skb))
@@ -2164,6 +2190,7 @@ process:
 	ret = 0;
     /* 如果sock未被user占用 */
 	if (!sock_owned_by_user(sk)) {
+/* TODO: 了解一下这个net DMA啊 */
 #ifdef CONFIG_NET_DMA
 		struct tcp_sock *tp = tcp_sk(sk);
 		if (!tp->ucopy.dma_chan && tp->ucopy.pinned_list)
@@ -2173,11 +2200,18 @@ process:
 		else
 #endif
 		{
-            /* 如果符合加入prequeue的原则，则加入prequeue,返回true; 反之返回false */
+/* 重要笔记: TCP queues are processed mainly in two places:
+ *     a. delay ACK timer, tcp_delack_timer()
+ *     b. tcp_recvmsg(), when the application wants to receive data over the socket
+ *  TODO: 理清这两种情况
+ */
+            /* 如果符合加入prequeue的原则，则加入prequeue.
+             * 加入成功返回true; 反之返回false */
 			if (!tcp_prequeue(sk, skb))
 				ret = tcp_v4_do_rcv(sk, skb);
 		}
     /* 如果sock被占用，则放到backlog queue中 */
+    /* TODO: 此时backlog queue的limit使用rcvbuf和sndbuf的和，有点奇怪 */
 	} else if (unlikely(sk_add_backlog(sk, skb,
 					   sk->sk_rcvbuf + sk->sk_sndbuf))) {
 		bh_unlock_sock(sk);
@@ -2201,6 +2235,7 @@ csum_error:
 bad_packet:
 		TCP_INC_STATS_BH(net, TCP_MIB_INERRS);
 	} else {
+        /* 发送RST情境1：当收到的数据包，没有找到tcp_socket时，需要发送reset给对端 */
 		tcp_v4_send_reset(NULL, skb);
 	}
 
@@ -2227,6 +2262,7 @@ do_time_wait:
 		inet_twsk_put(inet_twsk(sk));
 		goto csum_error;
 	}
+    /* TODO: 分析timewait socket的处理 */
 	switch (tcp_timewait_state_process(inet_twsk(sk), skb, th)) {
 	case TCP_TW_SYN: {
 		struct sock *sk2 = inet_lookup_listener(dev_net(skb->dev),

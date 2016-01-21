@@ -395,6 +395,7 @@ static void tcp_init_nondata_skb(struct sk_buff *skb, u32 seq, u8 flags)
 	TCP_SKB_CB(skb)->end_seq = seq;
 }
 
+/* 如果snd_up不等于snd_una，则说明有urgent data需要发送 */
 static inline bool tcp_urg_mode(const struct tcp_sock *tp)
 {
 	return tp->snd_una != tp->snd_up;
@@ -1007,12 +1008,15 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	th->urg_ptr		= 0;
 
 	/* The urg_mode check is necessary during a below snd_una win probe */
-    /* TODO: urget pointer的功能详细分析一下 */
+    /* 如果有一字节的urgent data需要发送 */
 	if (unlikely(tcp_urg_mode(tp) && before(tcb->seq, tp->snd_up))) {
+        /* urgent point有2字节长度的限制 */
 		if (before(tp->snd_up, tcb->seq + 0x10000)) {
+            /* 设置urg_ptr和urg标记 */
 			th->urg_ptr = htons(tp->snd_up - tcb->seq);
 			th->urg = 1;
 		} else if (after(tcb->seq + 0xFFFF, tp->snd_nxt)) {
+            /* 这里算是一个trick啦 */
 			th->urg_ptr = htons(0xFFFF);
 			th->urg = 1;
 		}
@@ -2270,6 +2274,7 @@ void __tcp_push_pending_frames(struct sock *sk, unsigned int cur_mss,
 /* Send _single_ skb sitting at the send head. This function requires
  * true push pending frames to setup probe timer etc.
  */
+/* 将发送队列的head数据包发送出去 */
 void tcp_push_one(struct sock *sk, unsigned int mss_now)
 {
 	struct sk_buff *skb = tcp_send_head(sk);

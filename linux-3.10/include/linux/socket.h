@@ -232,7 +232,7 @@ struct ucred {
    Added those for 1003.1g not all are supported yet
  */
  
-#define MSG_OOB		1
+#define MSG_OOB		1       /* Out-Of-Band数据，TCP仅支持一次发送一个字节, 对于TCP而言OOB用的极少 */
 #define MSG_PEEK	2
 #define MSG_DONTROUTE	4
 #define MSG_TRYHARD     4       /* Synonym for MSG_DONTROUTE for DECnet */

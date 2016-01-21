@@ -320,6 +320,7 @@ struct sock {
 		struct sk_buff	*head;
 		struct sk_buff	*tail;
 	} sk_backlog;
+    /* 接收到的skb所占用的内存大小 */
 #define sk_rmem_alloc sk_backlog.rmem_alloc
 	int			sk_forward_alloc;
 #ifdef CONFIG_RPS
@@ -758,6 +759,7 @@ static inline bool sk_stream_memory_free(const struct sock *sk)
 }
 
 /* OOB backlog add */
+/* 将skb加入到backlog queue中 */
 static inline void __sk_add_backlog(struct sock *sk, struct sk_buff *skb)
 {
 	/* dont let skb dst not refcounted, we are going to leave rcu lock */
@@ -777,6 +779,7 @@ static inline void __sk_add_backlog(struct sock *sk, struct sk_buff *skb)
  * Do not take into account this skb truesize,
  * to allow even a single big packet to come.
  */
+/* 判断队列是否被占满 */
 static inline bool sk_rcvqueues_full(const struct sock *sk, const struct sk_buff *skb,
 				     unsigned int limit)
 {
@@ -786,10 +789,12 @@ static inline bool sk_rcvqueues_full(const struct sock *sk, const struct sk_buff
 }
 
 /* The per-socket spinlock must be held here. */
+/* 在用户锁住了socket时，只能将接收到的数据放入backlog queue中 */
+/* backlog queue中的数据会在用户释放socket锁的时候进行处理 */
 static inline __must_check int sk_add_backlog(struct sock *sk, struct sk_buff *skb,
 					      unsigned int limit)
 {
-    /* 如果接受队列已满，则返回空间不足错误 */
+    /* 如果队列已满，则返回空间不足错误 */
 	if (sk_rcvqueues_full(sk, skb, limit))
 		return -ENOBUFS;
 
@@ -805,6 +810,7 @@ static inline int sk_backlog_rcv(struct sock *sk, struct sk_buff *skb)
 	if (sk_memalloc_socks() && skb_pfmemalloc(skb))
 		return __sk_backlog_rcv(sk, skb);
 
+    /* 对于TCP协议而言，就是tcp_v4_do_rcv() */
 	return sk->sk_backlog_rcv(sk, skb);
 }
 
@@ -2132,6 +2138,8 @@ static inline long sock_sndtimeo(const struct sock *sk, bool noblock)
 	return noblock ? 0 : sk->sk_sndtimeo;
 }
 
+/* 如果是waitall模式，则必须返回所有数据；
+ * 否则返回min(sk_rcvlowat, len)， 其中sk_rcvlowat表示最少应该接收多少字节 */
 static inline int sock_rcvlowat(const struct sock *sk, int waitall, int len)
 {
 	return (waitall ? len : min_t(int, sk->sk_rcvlowat, len)) ? : 1;
@@ -2219,6 +2227,7 @@ extern void sock_tx_timestamp(struct sock *sk, __u8 *tx_flags);
  * locked so that the sk_buff queue operation is ok.
 */
 #ifdef CONFIG_NET_DMA
+/* 释放一个skb */
 static inline void sk_eat_skb(struct sock *sk, struct sk_buff *skb, bool copied_early)
 {
 	__skb_unlink(skb, &sk->sk_receive_queue);

@@ -792,6 +792,7 @@ static inline int __sock_recvmsg_nosec(struct kiocb *iocb, struct socket *sock,
 	si->size = size;
 	si->flags = flags;
 
+    /* 调用inet_recvmsg() */
 	return sock->ops->recvmsg(iocb, sock, msg, size, flags);
 }
 
@@ -803,6 +804,7 @@ static inline int __sock_recvmsg(struct kiocb *iocb, struct socket *sock,
 	return err ?: __sock_recvmsg_nosec(iocb, sock, msg, size, flags);
 }
 
+/* 接收一个数据 */
 int sock_recvmsg(struct socket *sock, struct msghdr *msg,
 		 size_t size, int flags)
 {
@@ -1875,7 +1877,7 @@ SYSCALL_DEFINE4(send, int, fd, void __user *, buff, size_t, len,
  *	sender. We verify the buffers are writable and if needed move the
  *	sender address from kernel to user space.
  */
-
+/* sys_recv()具体调用该函数进行处理 */
 SYSCALL_DEFINE6(recvfrom, int, fd, void __user *, ubuf, size_t, size,
 		unsigned int, flags, struct sockaddr __user *, addr,
 		int __user *, addr_len)
@@ -1901,11 +1903,13 @@ SYSCALL_DEFINE6(recvfrom, int, fd, void __user *, ubuf, size_t, size,
 	iov.iov_base = ubuf;
 	msg.msg_name = (struct sockaddr *)&address;
 	msg.msg_namelen = sizeof(address);
+    /* 设置nonblock 标记 */
 	if (sock->file->f_flags & O_NONBLOCK)
 		flags |= MSG_DONTWAIT;
 	err = sock_recvmsg(sock, &msg, size, flags);
 
 	if (err >= 0 && addr != NULL) {
+        /* address存储该msg的目的地址 */
 		err2 = move_addr_to_user(&address,
 					 msg.msg_namelen, addr, addr_len);
 		if (err2 < 0)
@@ -1920,7 +1924,7 @@ out:
 /*
  *	Receive a datagram from a socket.
  */
-
+/* sys_recv()函数，奇怪该函数没有define形式定义 */
 asmlinkage long sys_recv(int fd, void __user *ubuf, size_t size,
 			 unsigned int flags)
 {

@@ -311,6 +311,7 @@ EXPORT_SYMBOL(skb_kill_datagram);
  *
  *	Note: the iovec is modified during the copy.
  */
+/* TODO */
 int skb_copy_datagram_iovec(const struct sk_buff *skb, int offset,
 			    struct iovec *to, int len)
 {

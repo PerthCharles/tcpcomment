@@ -864,6 +864,7 @@ ssize_t inet_sendpage(struct socket *sock, struct page *page, int offset,
 }
 EXPORT_SYMBOL(inet_sendpage);
 
+/* INET_AF负责接收数据的处理函数 */
 int inet_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 		 size_t size, int flags)
 {
@@ -873,6 +874,8 @@ int inet_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 
 	sock_rps_record_flow(sk);
 
+    /* 调用tcp_recvmsg */
+    /* 坑爹的居然要传入两个flag, 一个标记是否是non block；一个标记其他flag */
 	err = sk->sk_prot->recvmsg(iocb, sk, msg, size, flags & MSG_DONTWAIT,
 				   flags & ~MSG_DONTWAIT, &addr_len);
 	if (err >= 0)
