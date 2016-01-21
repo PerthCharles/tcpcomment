@@ -250,6 +250,7 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 	}
 	/* OK, now commit destination to socket.  */
 	sk->sk_gso_type = SKB_GSO_TCPV4;
+    /* 这里其实已经设置了dst了，所以大部分情况下，发送SYN包的时候应该也是知道dst路由的 */
 	sk_setup_caps(sk, &rt->dst);
 
     /* connect阶段的write_seq就是ISN值 */
