@@ -5065,6 +5065,7 @@ static int tcp_prune_queue(struct sock *sk)
  * As additional protections, we do not touch cwnd in retransmission phases,
  * and if application hit its sndbuf limit recently.
  */
+/* slow start after idle的策略 */
 void tcp_cwnd_application_limited(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -5075,7 +5076,9 @@ void tcp_cwnd_application_limited(struct sock *sk)
 		u32 init_win = tcp_init_cwnd(tp, __sk_dst_get(sk));
 		u32 win_used = max(tp->snd_cwnd_used, init_win);
 		if (win_used < tp->snd_cwnd) {
+            /* 设置ssthresh为当前cwnd的75% */
 			tp->snd_ssthresh = tcp_current_ssthresh(sk);
+            /* 降低cwnd */
 			tp->snd_cwnd = (tp->snd_cwnd + win_used) >> 1;
 		}
 		tp->snd_cwnd_used = 0;

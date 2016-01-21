@@ -993,6 +993,7 @@ static inline u32 tcp_wnd_end(const struct tcp_sock *tp)
 }
 extern bool tcp_is_cwnd_limited(const struct sock *sk, u32 in_flight);
 
+/* 如果是发送了一个小包，则更新snd_sml指针 */
 static inline void tcp_minshall_update(struct tcp_sock *tp, unsigned int mss,
 				       const struct sk_buff *skb)
 {
@@ -1424,6 +1425,7 @@ static inline bool tcp_skb_is_last(const struct sock *sk,
 	return skb_queue_is_last(&sk->sk_write_queue, skb);
 }
 
+/* 更新send_head */
 static inline void tcp_advance_send_head(struct sock *sk, const struct sk_buff *skb)
 {
 	if (tcp_skb_is_last(sk, skb))

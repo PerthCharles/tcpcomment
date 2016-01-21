@@ -345,6 +345,10 @@ struct sock {
     /* 用于发送数据所占用的内存开销，包括SKB header开销
      * 包括放到qdisc + dev queue中的内存 !!! */
     /* 英文注释的理解： 已经提交至发送队列的skb所占用的内存，这里的发送队列应该是指qdisc + dev queue */
+    /* 关于sk_wmem_alloc和sk_wmem_queued：
+     *     sk_wmem_alloc记录的是已经离开TCP层、但未从网卡发送出去的SKB所占的内存
+     *     sk_wmem_queued记录的是TCP sndbuf中skb占用的内存
+     *     理论上: sk_wmem_alloc <= sk_wmem_queued   吐槽一下这两个变量取的名字不太理想 */
 	atomic_t		sk_wmem_alloc;              
 	atomic_t		sk_omem_alloc;
 	int			sk_sndbuf;

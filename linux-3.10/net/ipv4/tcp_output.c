@@ -77,6 +77,7 @@ static void tcp_event_new_data_sent(struct sock *sk, const struct sk_buff *skb)
 	struct tcp_sock *tp = tcp_sk(sk);
 	unsigned int prior_packets = tp->packets_out;
 
+    /* 更新send_head、snd_nxt、packets_out */
 	tcp_advance_send_head(sk, skb);
 	tp->snd_nxt = TCP_SKB_CB(skb)->end_seq;
 
@@ -1157,6 +1158,7 @@ static void tcp_adjust_pcount(struct sock *sk, const struct sk_buff *skb, int de
  * packet to the list.  This won't be called frequently, I hope.
  * Remember, these are still headerless SKBs at this point.
  */
+/* tcp层进行分片 */
 int tcp_fragment(struct sock *sk, struct sk_buff *skb, u32 len,
 		 unsigned int mss_now)
 {
@@ -1373,6 +1375,7 @@ int tcp_mss_to_mtu(struct sock *sk, int mss)
 }
 
 /* MTU probing init per socket */
+/* MTU probe机制初始化，系统默认是关闭的! */
 void tcp_mtup_init(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -1465,6 +1468,7 @@ unsigned int tcp_current_mss(struct sock *sk)
 }
 
 /* Congestion window validation. (RFC2861) */
+/* TODO: 读最新的RFC7661 */
 static void tcp_cwnd_validate(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -1478,6 +1482,8 @@ static void tcp_cwnd_validate(struct sock *sk)
 		if (tp->packets_out > tp->snd_cwnd_used)
 			tp->snd_cwnd_used = tp->packets_out;
 
+        /* 如果启用了slow start after idle
+         * 当cwnd有一个RTO没有被变动过, 则降低cwnd */
 		if (sysctl_tcp_slow_start_after_idle &&
 		    (s32)(tcp_time_stamp - tp->snd_cwnd_stamp) >= inet_csk(sk)->icsk_rto)
 			tcp_cwnd_application_limited(sk);
@@ -1496,6 +1502,7 @@ static void tcp_cwnd_validate(struct sock *sk)
  * modulo only when the receiver window alone is the limiting factor or
  * when we would be allowed to send the split-due-to-Nagle skb fully.
  */
+/* 在支持TSO时，如果skb长度= n * MSS + m，该函数的核心作用就是返回n*MSS */
 static unsigned int tcp_mss_split_point(const struct sock *sk, const struct sk_buff *skb,
 					unsigned int mss_now, unsigned int max_segs)
 {
@@ -1505,6 +1512,7 @@ static unsigned int tcp_mss_split_point(const struct sock *sk, const struct sk_b
 	window = tcp_wnd_end(tp) - TCP_SKB_CB(skb)->seq;
 	max_len = mss_now * max_segs;
 
+    /* 如果rwnd用空间发送，并且skb不是最后一个SKB，那么直接发送所有数据 */
 	if (likely(max_len <= window && skb != tcp_write_queue_tail(sk)))
 		return max_len;
 
@@ -1681,6 +1689,7 @@ bool tcp_may_send_now(struct sock *sk)
  * know that all the data is in scatter-gather pages, and that the
  * packet has never been sent out before (and thus is not cloned).
  */
+/* 将长度为len + x的skb，分割成长度为len的skb_1和长度为x的skb_2 */
 static int tso_fragment(struct sock *sk, struct sk_buff *skb, unsigned int len,
 			unsigned int mss_now, gfp_t gfp)
 {
@@ -1844,6 +1853,7 @@ static int tcp_mtu_probe(struct sock *sk)
 	 * not in recovery,
 	 * have enough cwnd, and
 	 * not SACKing (the variable headers throw things off) */
+    /* 默认情况下MTU probeing是关闭的，故直接返回-1 */
 	if (!icsk->icsk_mtup.enabled ||
 	    icsk->icsk_mtup.probe_size ||
 	    inet_csk(sk)->icsk_ca_state != TCP_CA_Open ||
@@ -1964,8 +1974,10 @@ static int tcp_mtu_probe(struct sock *sk)
 
  * Returns true, if no segments are in flight and we have queued segments,
  * but cannot send anything now because of SWS or another problem.
+ * 说白了，就是遇到zero window的时候，return true
  */
-/* 负责将数据发送出去 */
+/* 负责将数据发送出去, 该函数只负责发送新数据 */
+/* 关于push_one的作用已经在英文注释解释了，补充一点: push_one == 2的场景目前仅用在TLP机制中 */
 static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			   int push_one, gfp_t gfp)
 {
@@ -1979,24 +1991,29 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 
 	if (!push_one) {
 		/* Do MTU probing. */
+        /* 默认没有开启，直接返回-1 */
 		result = tcp_mtu_probe(sk);
 		if (!result) {
 			return false;
 		} else if (result > 0) {
+            /* 记录MTU probing已经发送的一个数据包 */
 			sent_pkts = 1;
 		}
 	}
 
+    /* 从send_head处开始发送 */
 	while ((skb = tcp_send_head(sk))) {
 		unsigned int limit;
 
 
+        /* 返回该SKB对应的需要拆分的数量 */
 		tso_segs = tcp_init_tso_segs(sk, skb, mss_now);
 		BUG_ON(!tso_segs);
 
 		if (unlikely(tp->repair) && tp->repair_queue == TCP_SEND_QUEUE)
 			goto repair; /* Skip network transmission */
 
+        /* 检查cwnd是否允许发送数据 */
 		cwnd_quota = tcp_cwnd_test(tp, skb);
 		if (!cwnd_quota) {
 			if (push_one == 2)
@@ -2006,11 +2023,14 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 				break;
 		}
 
+        /* 检查rwnd是否允许发送数据 */
 		if (unlikely(!tcp_snd_wnd_test(tp, skb, mss_now)))
 			break;
 
 		if (tso_segs == 1) {
+            /* 判断nagle 算法是否允许数据发送出去 */
 			if (unlikely(!tcp_nagle_test(tp, skb, mss_now,
+                             /* 如果不是最后一个SKB，则可以直接发送出去 */
 						     (tcp_skb_is_last(sk, skb) ?
 						      nonagle : TCP_NAGLE_PUSH))))
 				break;
@@ -2023,24 +2043,30 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 		/* TSQ : sk_wmem_alloc accounts skb truesize,
 		 * including skb overhead. But thats OK.
 		 */
-        /* 如果单条TCP流使用的用于发送的内存超过阈值，则标记为TSQ_THROTTLED，并停止发送 */
+        /* 如果单条TCP流提交到qdisc+dev queue中的SKB占用内存超过阈值，则标记为TSQ_THROTTLED，并停止发送 */
 		if (atomic_read(&sk->sk_wmem_alloc) >= sysctl_tcp_limit_output_bytes) {
 			set_bit(TSQ_THROTTLED, &tp->tsq_flags);
 			break;
 		}
 		limit = mss_now;
 		if (tso_segs > 1 && !tcp_urg_mode(tp))
+            /* 计算skb需要分片的位置 */
 			limit = tcp_mss_split_point(sk, skb, mss_now,
+                            /* 注意传入的参数，考虑到了cwnd */
 						    min_t(unsigned int,
 							  cwnd_quota,
 							  sk->sk_gso_max_segs));
 
+        /* 如果需要分片(len > limit), 则进行tso分片 */
+        /* 一般情况下，是返回mss_now * gso_max_segs，基本不用触发分片 */
 		if (skb->len > limit &&
 		    unlikely(tso_fragment(sk, skb, limit, mss_now, gfp)))
 			break;
 
+        /* 记录该skb发送出去的时间 */
 		TCP_SKB_CB(skb)->when = tcp_time_stamp;
 
+        /* 发送skb, 其实是发送一份clone出去，该skb还是会保留在TCP层的发送队列中, 直到被按序确认掉 */
 		if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp)))
 			break;
 
@@ -2050,23 +2076,33 @@ repair:
 		 */
 		tcp_event_new_data_sent(sk, skb);
 
+        /* 如果发送了一个小包，则更新snd_sml指针 */
 		tcp_minshall_update(tp, mss_now, skb);
+        /* sent_pkts记录该次遍历发送出去的数据包个数 */
 		sent_pkts += tcp_skb_pcount(skb);
 
+        /* 如果最多只发送一个数据包，则停止发送 */
 		if (push_one)
 			break;
 	}
 
 	if (likely(sent_pkts)) {
+        /* 如果是在PRR算法阶段，即快速恢复阶段，则记录PRR算法发送出去的数据包 */
 		if (tcp_in_cwnd_reduction(sk))
 			tp->prr_out += sent_pkts;
 
 		/* Send one loss probe per tail loss episode. */
+        /* 尝试安装PTO timer */
 		if (push_one != 2)
 			tcp_schedule_loss_probe(sk);
 		tcp_cwnd_validate(sk);
+        /* 返回false，表示没有发生错误 */
 		return false;
 	}
+    /* 如果TLP失败，则返回true
+     * 或
+     * 如果zero window出现了, 则返回true
+     * anyway, tcp_write_xmit()返回返回true其实是错误 */
 	return (push_one == 2) || (!tp->packets_out && tcp_send_head(sk));
 }
 
@@ -2484,6 +2520,9 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 	/* Do not sent more than we queued. 1/4 is reserved for possible
 	 * copying overhead: fragmentation, tunneling, mangling etc.
 	 */
+    /* 不考虑重传的话，sk_wmem_alloc不可能超过sk_wmem_queued，只有重传时才可能超过。
+     * 来假设一个可能：发送的数据都在qdisc 队列中排着队，而RTO超时后又准备发送数据
+     * 到目前为止：认为这种情况发生的概率太低了*/
 	if (atomic_read(&sk->sk_wmem_alloc) >
 	    min(sk->sk_wmem_queued + (sk->sk_wmem_queued >> 2), sk->sk_sndbuf))
 		return -EAGAIN;
