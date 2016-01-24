@@ -50,6 +50,7 @@ TRACE_EVENT(consume_skb,
 	TP_printk("skbaddr=%p", __entry->skbaddr)
 );
 
+/* 记录数据从skb拷贝到用户态buffer的长度 */
 TRACE_EVENT(skb_copy_datagram_iovec,
 
 	TP_PROTO(const struct sk_buff *skb, int len),

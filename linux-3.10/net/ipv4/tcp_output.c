@@ -97,12 +97,17 @@ static void tcp_event_new_data_sent(struct sock *sk, const struct sk_buff *skb)
  * Anything in between SND.UNA...SND.UNA+SND.WND also can be already
  * invalid. OK, let's make this for now:
  */
+/* 返回一个合法的seq number值作为发送数据包的seq number */
+/* 目前该函数仅在发送reset包和纯ACK包时使用 */
 static inline __u32 tcp_acceptable_seq(const struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 
+    /* 一般情况下，这个seq值就是snd_nxt */
 	if (!before(tcp_wnd_end(tp), tp->snd_nxt))
 		return tp->snd_nxt;
+    /* 但如果对端window缩小，为了保证数据包序号处于对端的可接受范围，
+     * 只好强制使用tcp_wnd_end(tp)作为seq number */
 	else
 		return tcp_wnd_end(tp);
 }
@@ -3324,6 +3329,7 @@ void tcp_send_delayed_ack(struct sock *sk)
 }
 
 /* This routine sends an ack and also updates the window. */
+/* 发送一个ACK包 */
 void tcp_send_ack(struct sock *sk)
 {
 	struct sk_buff *buff;

@@ -107,9 +107,23 @@ void SOCK_DEBUG(const struct sock *sk, const char *msg, ...)
  * between user contexts and software interrupt processing, whereas the
  * mini-semaphore synchronizes multiple users amongst themselves.
  */
+/* 给sk上锁的关键数据结构
+ * 用户态的process context的处理:
+ *     1. 拿到自旋锁
+ *     2. 如果已经有用户进程占用了该sk，则执行下面的循环
+ *         while(true) {
+ *             unlock()     // 把自旋锁释放掉
+ *             schedule()   // 调度进程，期望下一次进来的时候发现已经没有用户占用了
+ *             lock()       // 再次锁上sk，尝试看看有没有用户占用
+ *             if (没有用户占用了)
+ *                 break;
+ *         }
+ *     3. 此时还占用着自旋锁，可以安全的将owned设置为1
+ *     4. 释放自旋锁
+ */
 typedef struct {
 	spinlock_t		slock;
-	int			owned;
+	int			owned;      /* 自旋锁保护的就是这个owned变量 */
 	wait_queue_head_t	wq;
 	/*
 	 * We express the mutex-alike socket_lock semantics
@@ -330,7 +344,7 @@ struct sock {
 	int			sk_rcvbuf;
 
 	struct sk_filter __rcu	*sk_filter;
-	struct socket_wq __rcu	*sk_wq;
+	struct socket_wq __rcu	*sk_wq;     /* sk的等待队列 */
 
 #ifdef CONFIG_NET_DMA
 	struct sk_buff_head	sk_async_wait_queue;
@@ -1486,6 +1500,8 @@ do {									\
 
 extern void lock_sock_nested(struct sock *sk, int subclass);
 
+/* 用户态进程给sk上锁
+ * 实际动作是通过自旋锁的保护，设置sk owned标记 */
 static inline void lock_sock(struct sock *sk)
 {
 	lock_sock_nested(sk, 0);

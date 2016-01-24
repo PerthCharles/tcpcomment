@@ -1406,7 +1406,9 @@ static int tcp_peek_sndq(struct sock *sk, struct msghdr *msg, int len)
  * calculation of whether or not we must ACK for the sake of
  * a window update.
  */
-/* TODO： */
+/* 函数作用：
+ *  1. 在应用层读取数据后，更新receive buffer相关信息
+ *  2. 如果有需要，则发送一个ACK (典型场景：zero window后的window update) */
 void tcp_cleanup_rbuf(struct sock *sk, int copied)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -1418,12 +1420,19 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
 	     "cleanup rbuf bug: copied %X seq %X rcvnxt %X\n",
 	     tp->copied_seq, TCP_SKB_CB(skb)->end_seq, tp->rcv_nxt);
 
+    /* 如果已经有一个ack在等待调度进行发送，则根据具体判断条件决定是否发送ACK */
 	if (inet_csk_ack_scheduled(sk)) {
 		const struct inet_connection_sock *icsk = inet_csk(sk);
 		   /* Delayed ACKs frequently hit locked sockets during bulk
 		    * receive. */
+        /* delayack timer在准备发送ack时，会判断sk是否被user占用。如果被user占用，则会设置blocked标记。
+         * 而tcp_cleanup_rbuf()的调用路径就是在user process context下，因此如果存在被blocked ack，
+         * 那么就应该有user process context负责发送ack */
 		if (icsk->icsk_ack.blocked ||
 		    /* Once-per-two-segments ACK was not sent by tcp_input.c */
+            /* rcv_wup表示本地上一次更新接收窗口的位置, 理论上它会在每次发送skb(包括发送ACK)的时候都更新,
+             * 如果下式成立，说明已经接收了超过一个MSS长度的数据。
+             * 如果此时还没有发送ACK出去，说明one-per-two-segments ack机制没有在tcp_input.c中做到，故应该发送ACK */
 		    tp->rcv_nxt - tp->rcv_wup > icsk->icsk_ack.rcv_mss ||
 		    /*
 		     * If this read emptied read buffer, we send ACK, if
@@ -1431,6 +1440,7 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
 		     * receive buffer and there was a small segment
 		     * in queue.
 		     */
+            /* TODO： 这个条件copied和sk_rmem_alloc都理解，但是ACK_PUSHED不太懂，需要后续更新理解 */
 		    (copied > 0 &&
 		     ((icsk->icsk_ack.pending & ICSK_ACK_PUSHED2) ||
 		      ((icsk->icsk_ack.pending & ICSK_ACK_PUSHED) &&
@@ -1445,11 +1455,13 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
 	 * Even if window raised up to infinity, do not send window open ACK
 	 * in states, where we will not receive more. It is useless.
 	 */
+    /* 即使以上条件不满足发送ACK的时机，如果read释放出了大量的rwnd空间，也应该发送ACK去通知对端 */
 	if (copied > 0 && !time_to_ack && !(sk->sk_shutdown & RCV_SHUTDOWN)) {
 		__u32 rcv_window_now = tcp_receive_window(tp);
 
 		/* Optimize, __tcp_select_window() is not cheap. */
 		if (2*rcv_window_now <= tp->window_clamp) {
+            /* TODO: 读__tcp_select_window() */
 			__u32 new_window = __tcp_select_window(sk);
 
 			/* Send ACK now, if this read freed lots of space
@@ -1457,10 +1469,13 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
 			 * We can advertise it now, if it is not less than current one.
 			 * "Lots" means "at least twice" here.
 			 */
+            /* 如果本次read()释放出了较大的rwnd，那么需要发送rwnd进行更新
+             * 我想防止SWS的rwnd通告机制应该是在__tcp_select_window()中实现的 */
 			if (new_window && new_window >= 2 * rcv_window_now)
 				time_to_ack = true;
 		}
 	}
+    /* 如果需要发送ACK，则发送一个纯ACK */
 	if (time_to_ack)
 		tcp_send_ack(sk);
 }
@@ -1477,7 +1492,11 @@ static void tcp_prequeue_process(struct sock *sk)
 
 	/* RX process wants to run with disabled BHs, though it is not
 	 * necessary */
-	local_bh_disable();
+    /* 理论上此时是不需要disable bh的，因为此时该socket收到的数据包都会放到backlog queue中。
+     * 这里disable bh的效果：actually deferring the processing of packets on the current CPU
+     * TODO: 但这样做的必要性在哪里呢？？？
+     */
+    local_bh_disable();
 	while ((skb = __skb_dequeue(&tp->ucopy.prequeue)) != NULL)
         /* 调用tcp_v4_do_rcv()处理函数 */
 		sk_backlog_rcv(sk, skb);

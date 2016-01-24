@@ -413,7 +413,7 @@ typedef unsigned char *sk_buff_data_t;
  *     2. Linear data block containing data
  *     3. Nonlinear data portion represented by struct skb_shared_info
  */
-/* TODO： 区分sk_buff中的linear data buffer 和 nonlinear data */
+/* TODO-DONE： 区分sk_buff中的linear data 和 nonlinear data */
 /* ADI书中的图5.4 Paged data area organization for sk_buff非常明了的说明了linear data和nonlinear data的区别
  * 同时也非常明确的展现了skb->len skb->data_len 和skb->truesize的不同 */
 struct sk_buff {
@@ -1318,6 +1318,8 @@ static inline bool skb_is_nonlinear(const struct sk_buff *skb)
 	return skb->data_len;
 }
 
+/* 计算skb linear区域的数据长度
+ * 这个函数取的名字不太好 */
 static inline unsigned int skb_headlen(const struct sk_buff *skb)
 {
 	return skb->len - skb->data_len;
@@ -2097,6 +2099,7 @@ static inline void skb_propagate_pfmemalloc(struct page *page,
  *
  * Returns the &struct page associated with @frag.
  */
+/* 返回page fragment对应的具体page */
 static inline struct page *skb_frag_page(const skb_frag_t *frag)
 {
 	return frag->page.p;

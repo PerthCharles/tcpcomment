@@ -32,7 +32,9 @@ EXPORT_SYMBOL(memcpy_fromiovec);
  *
  *	Note: this modifies the original iovec.
  */
-
+/* 拷贝数据到iovec */
+/* TODO: 突然想到一个脑洞: 用户调用时那个buffer仅仅是一个指针而已。如果在调用的时候将它设计成符合iovec结构体的buffer，
+ * 会不会使recv()可以同时用多个不连续的buffer block接收数据呢? */
 int memcpy_toiovec(struct iovec *iov, unsigned char *kdata, int len)
 {
 	while (len > 0) {
@@ -45,6 +47,7 @@ int memcpy_toiovec(struct iovec *iov, unsigned char *kdata, int len)
 			iov->iov_len -= copy;
 			iov->iov_base += copy;
 		}
+        /* iovec可能有多个buffer */
 		iov++;
 	}
 

@@ -1892,6 +1892,8 @@ bool sk_page_frag_refill(struct sock *sk, struct page_frag *pfrag)
 }
 EXPORT_SYMBOL(sk_page_frag_refill);
 
+/* 等待已经占用sk的用户进程释放socket
+ * NOTE：是死循环的形式等待哦 */
 static void __lock_sock(struct sock *sk)
 	__releases(&sk->sk_lock.slock)
 	__acquires(&sk->sk_lock.slock)
@@ -1899,10 +1901,14 @@ static void __lock_sock(struct sock *sk)
 	DEFINE_WAIT(wait);
 
 	for (;;) {
+        /* 将进程设置为不可中断模式, 并且将自己挂在到wait queue中 */
 		prepare_to_wait_exclusive(&sk->sk_lock.wq, &wait,
 					TASK_UNINTERRUPTIBLE);
+        /* 给sk解锁 */
 		spin_unlock_bh(&sk->sk_lock.slock);
+        /* 让出CPU，登台其它进程release_sock()时唤醒自己*/
 		schedule();
+        /* 再次给sk加锁 */
 		spin_lock_bh(&sk->sk_lock.slock);
 		if (!sock_owned_by_user(sk))
 			break;
@@ -1910,6 +1916,7 @@ static void __lock_sock(struct sock *sk)
 	finish_wait(&sk->sk_lock.wq, &wait);
 }
 
+/* 用户processing conext释放sk时，需要将backlog queue中的数据处理完 */
 static void __release_sock(struct sock *sk)
 	__releases(&sk->sk_lock.slock)
 	__acquires(&sk->sk_lock.slock)
@@ -1959,12 +1966,14 @@ static void __release_sock(struct sock *sk)
  * We check receive queue before schedule() only as optimization;
  * it is very likely that release_sock() added new data.
  */
+/* 等待新数据放到sk_receive_queue中 */
 int sk_wait_data(struct sock *sk, long *timeo)
 {
 	int rc;
 	DEFINE_WAIT(wait);
 
 	prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
+    /* 将BSD socket的状态设置为等待数据 */
 	set_bit(SOCK_ASYNC_WAITDATA, &sk->sk_socket->flags);
 	rc = sk_wait_event(sk, timeo, !skb_queue_empty(&sk->sk_receive_queue));
 	clear_bit(SOCK_ASYNC_WAITDATA, &sk->sk_socket->flags);
@@ -2353,10 +2362,12 @@ EXPORT_SYMBOL(sock_init_data);
 void lock_sock_nested(struct sock *sk, int subclass)
 {
 	might_sleep();
+    /* TODO: 为什么这个过程需要将bh disable ？ 即把soft IRQ禁掉 ? */
 	spin_lock_bh(&sk->sk_lock.slock);
+    /* 如果已经有用户占用了，就必须等待他人释放掉它 */
 	if (sk->sk_lock.owned)
 		__lock_sock(sk);
-	sk->sk_lock.owned = 1;  /* 给sock 加锁 */
+	sk->sk_lock.owned = 1;  /* 设置sk被该进程占用了 */
 	spin_unlock(&sk->sk_lock.slock);
 	/*
 	 * The sk_lock has mutex_lock() semantics here:
@@ -2382,7 +2393,15 @@ void release_sock(struct sock *sk)
 		sk->sk_prot->release_cb(sk);
 
 	sk->sk_lock.owned = 0;
+    /* 如果有进程在等待数据，则wait up它 */
+    /* ADI书中的描述: 
+     *      Once someone holding the socket user status releases it,
+     *      it wakes up everyone waiting for the status. Whoever gets
+     *      CPU first will get the status, and the rest of them will
+     *      once again wait until the next release.
+     */
 	if (waitqueue_active(&sk->sk_lock.wq))
+        /* TODO：看看这个wait_up函数 */
 		wake_up(&sk->sk_lock.wq);
 	spin_unlock_bh(&sk->sk_lock.slock);
 }

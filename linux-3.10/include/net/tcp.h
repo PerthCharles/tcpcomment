@@ -658,6 +658,9 @@ static inline u32 tcp_rto_min(struct sock *sk)
  * Rcv_nxt can be after the window if our peer push more data
  * than the offered window.
  */
+/* 计算实际上rwnd还剩下多少空间。
+ * [rcv_wup, rcv_wup + rcv_wnd]是整个rwnd的seq范围，
+ * 一般情况下rcv_nxt就在这个范围内 */
 static inline u32 tcp_receive_window(const struct tcp_sock *tp)
 {
 	s32 win = tp->rcv_wup + tp->rcv_wnd - tp->rcv_nxt;

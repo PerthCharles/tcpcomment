@@ -311,17 +311,19 @@ EXPORT_SYMBOL(skb_kill_datagram);
  *
  *	Note: the iovec is modified during the copy.
  */
-/* TODO */
+/* 将SKB中的数据拷贝到iovec中 */
 int skb_copy_datagram_iovec(const struct sk_buff *skb, int offset,
 			    struct iovec *to, int len)
 {
 	int start = skb_headlen(skb);
-	int i, copy = start - offset;
+	int i, copy = start - offset;   /* copy首先计算出linear data area还有多少数据 */
 	struct sk_buff *frag_iter;
 
+    /* 有ftrace记录copy情况呢，debug的时候可以看一看 */
 	trace_skb_copy_datagram_iovec(skb, len);
 
 	/* Copy header. */
+    /* 首先自然就是将linear data area区域的数据拷贝到iovec */
 	if (copy > 0) {
 		if (copy > len)
 			copy = len;
@@ -333,6 +335,8 @@ int skb_copy_datagram_iovec(const struct sk_buff *skb, int offset,
 	}
 
 	/* Copy paged appendix. Hmm... why does this look so complicated? */
+    /* 拷贝paged data, 每次都从0号位置开启遍历，是不是有点性能不是最佳的?
+     * 比如read()读完了前两个page的数据，每次进来读却还要来遍历它俩。好在开销不大 */
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
 		int end;
 		const skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
@@ -340,6 +344,7 @@ int skb_copy_datagram_iovec(const struct sk_buff *skb, int offset,
 		WARN_ON(start > offset + len);
 
 		end = start + skb_frag_size(frag);
+        /* copy计算出该page还有多少数据可以读 */
 		if ((copy = end - offset) > 0) {
 			int err;
 			u8  *vaddr;
@@ -347,6 +352,7 @@ int skb_copy_datagram_iovec(const struct sk_buff *skb, int offset,
 
 			if (copy > len)
 				copy = len;
+            /* 返回page的对应的虚拟地址空间地址 */
 			vaddr = kmap(page);
 			err = memcpy_toiovec(to, vaddr + frag->page_offset +
 					     offset - start, copy);
@@ -360,6 +366,7 @@ int skb_copy_datagram_iovec(const struct sk_buff *skb, int offset,
 		start = end;
 	}
 
+    /* 最后处理skb分片的数据 */
 	skb_walk_frags(skb, frag_iter) {
 		int end;
 
@@ -369,6 +376,7 @@ int skb_copy_datagram_iovec(const struct sk_buff *skb, int offset,
 		if ((copy = end - offset) > 0) {
 			if (copy > len)
 				copy = len;
+            /* 网络子系统中少见的递归调用啊, 必须mark一下! */
 			if (skb_copy_datagram_iovec(frag_iter,
 						    offset - start,
 						    to, copy))
