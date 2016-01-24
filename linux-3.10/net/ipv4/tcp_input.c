@@ -5209,17 +5209,25 @@ static inline void tcp_ack_snd_check(struct sock *sk)
  *	For 1003.1g we should support a new option TCP_STDURG to permit
  *	either form (or just set the sysctl tcp_stdurg).
  */
-
+/* 检查urgent data合法性，如果合法，则记录urgent data的序号tp->urg_seq中, 此时还没有存入tp->urg_data中 */
 static void tcp_check_urg(struct sock *sk, const struct tcphdr *th)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	u32 ptr = ntohs(th->urg_ptr);
 
+    /* 关于urgent pointer有两种定义：
+     *      Linux implementation supports both theories of urgent byte,
+     *      where one says that an urgent byte is one byte ahead of the urgent pointer mark
+     *      and the other one says that an urgent byte is exactly pointed to by an urgent pointer mark.
+     * 所以sysctl_tcp_stdurg应该是在这两种定义中切换的作用
+     */
 	if (ptr && !sysctl_tcp_stdurg)
 		ptr--;
+    /* th->urg_ptr中存的是相对于th->seq的偏移 */
 	ptr += ntohl(th->seq);
 
 	/* Ignore urgent data that we've already seen and read. */
+    /* 忽视已处理过的urgent data */
 	if (after(tp->copied_seq, ptr))
 		return;
 
@@ -5233,14 +5241,17 @@ static void tcp_check_urg(struct sock *sk, const struct tcphdr *th)
 	 * situations. But it is worth to think about possibility of some
 	 * DoSes using some hypothetical application level deadlock.
 	 */
+    /* 如果ptr在rcv_nxt之前，也是不处理的 */
 	if (before(ptr, tp->rcv_nxt))
 		return;
 
 	/* Do we already have a newer (or duplicate) urgent pointer? */
+    /* tp->urg_data仅保留最新的urgent data */
 	if (tp->urg_data && !after(ptr, tp->urg_seq))
 		return;
 
 	/* Tell the world about our new urgent pointer. */
+    /* 发送信号 */
 	sk_send_sigurg(sk);
 
 	/* We may be adding urgent data when the last byte read was
@@ -5258,6 +5269,7 @@ static void tcp_check_urg(struct sock *sk, const struct tcphdr *th)
 	 * decline of BSD again. Verdict: it is better to remove to trap
 	 * buggy users.
 	 */
+    /* 如果不是inline模式，则需要将copied_seq加1，才能接着处理正常的TCP数据 */
 	if (tp->urg_seq == tp->copied_seq && tp->urg_data &&
 	    !sock_flag(sk, SOCK_URGINLINE) && tp->copied_seq != tp->rcv_nxt) {
 		struct sk_buff *skb = skb_peek(&sk->sk_receive_queue);
@@ -5268,6 +5280,7 @@ static void tcp_check_urg(struct sock *sk, const struct tcphdr *th)
 		}
 	}
 
+    /* 设置URGENT data等待接收标记, 因为urg_seq对应的数据可能还没收到 */
 	tp->urg_data = TCP_URG_NOTYET;
 	tp->urg_seq = ptr;
 
@@ -5276,6 +5289,7 @@ static void tcp_check_urg(struct sock *sk, const struct tcphdr *th)
 }
 
 /* This is the 'fast' part of urgent handling. */
+/* 处理收到的urgent data */
 static void tcp_urg(struct sock *sk, struct sk_buff *skb, const struct tcphdr *th)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -5294,8 +5308,10 @@ static void tcp_urg(struct sock *sk, struct sk_buff *skb, const struct tcphdr *t
 			u8 tmp;
 			if (skb_copy_bits(skb, ptr, &tmp, 1))
 				BUG();
+            /* 保存urg_data */
 			tp->urg_data = TCP_URG_VALID | tmp;
 			if (!sock_flag(sk, SOCK_DEAD))
+                /* 通告socket，收到的数据，需要处理了 */
 				sk->sk_data_ready(sk, 0);
 		}
 	}

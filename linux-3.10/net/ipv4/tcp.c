@@ -1337,12 +1337,41 @@ EXPORT_SYMBOL(tcp_sendmsg);
  *	Handle reading urgent data. BSD has very simple semantics for
  *	this, no blocking and very strange errors 8)
  */
-
+/* 关于urgent data，下面一段摘自ADI，对理解urgent data在TCP协议中的处理有很大帮助
+ *      A TCP urgent byte can be read in two different modes:
+ *          1. Inline
+ *          2. Out-of-band
+ *      The default mode for a socket to receive an urgent bytes is out-of-band.
+ *      Out-of-band data are a socket level abstraction and have nothing to do
+ *      with TCP byte-of-stream.
+ *
+ *      In both the cases, the TCP transmits and receiveds an urgent byte as normal
+ *      data. Once the urgent byte is received, it depends on the mode of reception
+ *      of an urgent byte from where the urgent byte will be read.
+ *
+ *      If an application wants to read an urgent byte as out-of-band data, it needs
+ *      to issue recv() with MSG_OOB set.
+ *      In the case where urgent byte is read inline, we don't need to issue_recv()
+ *      with an MSG_OOB flag set bacause it is read from the stream of bytes directly.
+ */
+/* tcp_recv_urg()函数就是Out-of-band模式读取urgent data的情况 */
+/* OOB模式的处理逻辑：
+ *      1. TCP在处理收到的数据包时，如果发现包头的urgent pointer不为空，
+ *         则将urgent data存放到tp->urg_data这里地方。等待user application调用recv(..., MSG_OOB)来读
+ *      2. user application 读取存放在tp->urg_data处的urgent data
+ */
+/* 读取成功，返回读取的urgent data长度，在TCP中这个len固定为1字节! */
 static int tcp_recv_urg(struct sock *sk, struct msghdr *msg, int len, int flags)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	/* No URG data to read. */
+    /* 如果以下条件之一满足，则返回错误
+     *  a. socket被设置为了inline模式
+     *  b. 没有收到urgent data
+     *  c. urgent data已经读取过了
+     */
+    /* urg_data的低字节存放urgent data, 高字节存放flag */
 	if (sock_flag(sk, SOCK_URGINLINE) || !tp->urg_data ||
 	    tp->urg_data == TCP_URG_READ)
 		return -EINVAL;	/* Yes this is right ! */
@@ -1350,14 +1379,17 @@ static int tcp_recv_urg(struct sock *sk, struct msghdr *msg, int len, int flags)
 	if (sk->sk_state == TCP_CLOSE && !sock_flag(sk, SOCK_DONE))
 		return -ENOTCONN;
 
+    /* 如果urgent data有效，则读取它 */
 	if (tp->urg_data & TCP_URG_VALID) {
 		int err = 0;
 		char c = tp->urg_data;
 
+        /* 如果不是PEEK模式，则将urgent data标记为已读 */
 		if (!(flags & MSG_PEEK))
 			tp->urg_data = TCP_URG_READ;
 
 		/* Read urgent data. */
+        /* 设置OOB标记 */
 		msg->msg_flags |= MSG_OOB;
 
 		if (len > 0) {
@@ -1652,6 +1684,7 @@ EXPORT_SYMBOL(tcp_read_sock);
  *	Probably, code can be easily improved even more.
  */
 /* TCP协议的recv处理函数 */
+/* 这个函数的完整流程真不简单，具体可看ADI的Figure 8.14d */
 int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		size_t len, int nonblock, int flags, int *addr_len)
 {
@@ -1736,6 +1769,12 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		u32 offset;
 
 		/* Are we at urgent data? Stop if we have read anything or have SIGURG pending. */
+        /* 如果有urg_data，那么最多读取到urg_seq就停止读取normal数据 */
+        /* ADI注解：
+         *      if we are reading normal data, we will continue to read
+         *      until we have read data up to an urgent pointer mark (tp->urg_seq)
+         *      and return to the application even if more data are requested. 
+         */
 		if (tp->urg_data && tp->urg_seq == *seq) {
 			if (copied)
 				break;
@@ -1948,18 +1987,25 @@ do_prequeue:
 			used = len;
 
 		/* Do we have urgent data here? */
+        /* 如果有urg_data, normal data最多读取到urg_seq位置 */
 		if (tp->urg_data) {
-			u32 urg_offset = tp->urg_seq - *seq;
+			u32 urg_offset = tp->urg_seq - *seq;    /* 计算urgent data与当前读取的位置的offset */
+            /* 如果urgent data在这个skb的data中 */
 			if (urg_offset < used) {
+                /* urg_offset == 0说明下一个要读取的字节就是urgent data */
 				if (!urg_offset) {
+                    /* 如果不止INLINE模式，即是OOB模式，则强制跳过该字节，继续处理normal data
+                     * 至于urgent data会有recv(..., MSG_OOB)去读取tp->urg_data进行处理 */
 					if (!sock_flag(sk, SOCK_URGINLINE)) {
 						++*seq;
 						urg_hole++;
 						offset++;
 						used--;
+                        /* 如果这个skb中除了urgent data没有别的数据，就不需要拷贝到iovec了*/
 						if (!used)
 							goto skip_copy;
 					}
+                /* 设置used最多读取到urgent_seq位置 */
 				} else
 					used = urg_offset;
 			}
@@ -2015,6 +2061,7 @@ do_prequeue:
 		tcp_rcv_space_adjust(sk);
 
 skip_copy:
+        /* 处理完urgent data后，会尝试进入fast path */
 		if (tp->urg_data && after(tp->copied_seq, tp->urg_seq)) {
 			tp->urg_data = 0;
 			tcp_fast_path_check(sk);
@@ -2090,7 +2137,7 @@ out:
 	return err;
 
 recv_urg:
-    /* TODO: 接收urg数据 */
+    /* 接收urg数据, 接收成功返回读取的数据长度 == 1Byte */
 	err = tcp_recv_urg(sk, msg, len, flags);
 	goto out;
 

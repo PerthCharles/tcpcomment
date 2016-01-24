@@ -2271,6 +2271,7 @@ static void sock_def_destruct(struct sock *sk)
 	kfree(sk->sk_protinfo);
 }
 
+/* 发送一个收到urgent data的信号 */
 void sk_send_sigurg(struct sock *sk)
 {
 	if (sk->sk_socket && sk->sk_socket->file)

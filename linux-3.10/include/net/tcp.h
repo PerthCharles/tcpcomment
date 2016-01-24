@@ -619,8 +619,14 @@ static inline u32 __tcp_set_rto(const struct tcp_sock *tp)
 
 extern void tcp_set_rto(struct sock *sk);
 
+/* 计算好pred_flags，从而用于fast path判断 */
 static inline void __tcp_fast_path_on(struct tcp_sock *tp, u32 snd_wnd)
 {
+    /* Fast Path的这个判断标准：
+     *  a. 正常的tcp header len
+     *  b. 仅带有ACK标记
+     *  c. 对端通知的rwnd没有改变
+     */
 	tp->pred_flags = htonl((tp->tcp_header_len << 26) |
 			       ntohl(TCP_FLAG_ACK) |
 			       snd_wnd);
@@ -631,6 +637,7 @@ static inline void tcp_fast_path_on(struct tcp_sock *tp)
 	__tcp_fast_path_on(tp, tp->snd_wnd >> tp->rx_opt.snd_wscale);
 }
 
+/* 检查是否能进入Fast Path */
 static inline void tcp_fast_path_check(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
