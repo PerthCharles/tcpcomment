@@ -71,6 +71,7 @@
 #include <trace/events/skb.h>
 #include <linux/highmem.h>
 
+/* 有两个cache */
 struct kmem_cache *skbuff_head_cache __read_mostly;
 static struct kmem_cache *skbuff_fclone_cache __read_mostly;
 

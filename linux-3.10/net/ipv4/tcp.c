@@ -990,6 +990,7 @@ static inline int select_size(const struct sock *sk, bool sg)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	int tmp = tp->mss_cache;
 
+    /* 不支持SG，就直接返回mss */
 	if (sg) {
 		if (sk_can_gso(sk)) {
 			/* Small frames wont use a full page:
@@ -999,6 +1000,9 @@ static inline int select_size(const struct sock *sk, bool sg)
 		} else {
 			int pgbreak = SKB_MAX_HEAD(MAX_TCP_HEADER);
 
+            /* 如果mss小于一个page能够放下的有效数据长度，则返回mss了；
+             * 如果mss大于一个Page能够放下的数据长度，并且mss小于SKB允许的paged data的总大小，那么返回一个Page的大小
+             * 如果mss大到paged区域放不下，那没办法，只能直接分配mss大小了 */
 			if (tmp >= pgbreak &&
 			    tmp <= pgbreak + (MAX_SKB_FRAGS - 1) * PAGE_SIZE)
 				tmp = pgbreak;
