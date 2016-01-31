@@ -530,11 +530,13 @@ static void skb_free_head(struct sk_buff *skb)
 		kfree(skb->head);
 }
 
+/* 释放skb的data */
 static void skb_release_data(struct sk_buff *skb)
 {
 	if (!skb->cloned ||
 	    !atomic_sub_return(skb->nohdr ? (1 << SKB_DATAREF_SHIFT) + 1 : 1,
 			       &skb_shinfo(skb)->dataref)) {
+        /* 依次释放skb的paged data */
 		if (skb_shinfo(skb)->nr_frags) {
 			int i;
 			for (i = 0; i < skb_shinfo(skb)->nr_frags; i++)
@@ -553,6 +555,7 @@ static void skb_release_data(struct sk_buff *skb)
 				uarg->callback(uarg, true);
 		}
 
+        /* 如果有分片，则依次释放各个分片 */
 		if (skb_has_frag_list(skb))
 			skb_drop_fraglist(skb);
 
@@ -594,12 +597,14 @@ static void kfree_skbmem(struct sk_buff *skb)
 	}
 }
 
+/* 释放skb引用的其他内容，主要就是减少对应的引用计数值 */
 static void skb_release_head_state(struct sk_buff *skb)
 {
 	skb_dst_drop(skb);
 #ifdef CONFIG_XFRM
 	secpath_put(skb->sp);
 #endif
+    /* 在释放skb内存时，如果有析构函数，则调用它 */
 	if (skb->destructor) {
 		WARN_ON(in_irq());
 		skb->destructor(skb);
@@ -626,6 +631,7 @@ static void skb_release_head_state(struct sk_buff *skb)
 static void skb_release_all(struct sk_buff *skb)
 {
 	skb_release_head_state(skb);
+    /* 如果有数据，则也要释放掉 */
 	if (likely(skb->head))
 		skb_release_data(skb);
 }
@@ -638,7 +644,7 @@ static void skb_release_all(struct sk_buff *skb)
  *	Clean the state. This is an internal helper function. Users should
  *	always call kfree_skb
  */
-
+/* 释放一个skb的内存 */
 void __kfree_skb(struct sk_buff *skb)
 {
 	skb_release_all(skb);

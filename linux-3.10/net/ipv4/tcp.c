@@ -319,6 +319,7 @@ int tcp_memory_pressure __read_mostly;
 EXPORT_SYMBOL(tcp_memory_pressure);
 
 /* 进入memory pressure状态 */
+/* TODO： 设置了memory pressure后，有什么限制？ */
 void tcp_enter_memory_pressure(struct sock *sk)
 {
 	if (!tcp_memory_pressure) {
@@ -408,6 +409,7 @@ void tcp_init_sock(struct sock *sk)
 
 	sk->sk_state = TCP_CLOSE;
 
+    /* 当sndbuf有新空间可以用的时候，调用该函数来继续写数据 */
 	sk->sk_write_space = sk_stream_write_space;
 	sock_set_flag(sk, SOCK_USE_WRITE_QUEUE);
 

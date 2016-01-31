@@ -1614,6 +1614,7 @@ EXPORT_SYMBOL(sock_wfree);
 /*
  * Read buffer destructor automatically called from kfree_skb.
  */
+/* 当一个skb被读取后，需要调用该析构函数来更新memory计数相关的sk_rmem_alloc值和sk_forward_alloc值 */
 void sock_rfree(struct sk_buff *skb)
 {
 	struct sock *sk = skb->sk;
@@ -1992,54 +1993,73 @@ EXPORT_SYMBOL(sk_wait_data);
  *	rmem allocation. This function assumes that protocols which have
  *	memory_pressure use sk_wmem_queued as write buffer accounting.
  */
+/* 分配内存，更新sk->sk_forward_alloc */
+/* 总结：
+ *     tcp_mem控制所有TCP流整体的内存消耗
+ *     tcp_rmem和tcp_wmem控制单条TCP流的内存消耗
+ */
 int __sk_mem_schedule(struct sock *sk, int size, int kind)
 {
+    /* 如tcp_prot */
 	struct proto *prot = sk->sk_prot;
 	int amt = sk_mem_pages(size);
 	long allocated;
 	int parent_status = UNDER_LIMIT;
 
+    /* 增加需要分配的内存数量, 这里先无条件的增加，如果最终是失败的，那么会undo的 */
 	sk->sk_forward_alloc += amt * SK_MEM_QUANTUM;
 
 	allocated = sk_memory_allocated_add(sk, amt, &parent_status);
 
 	/* Under limit. */
+    /* 如果内存开销小于tcp_mem[0]了，那么就离开memory pressure状态 */
 	if (parent_status == UNDER_LIMIT &&
 			allocated <= sk_prot_mem_limits(sk, 0)) {
 		sk_leave_memory_pressure(sk);
+        /* 立即返回true，表示内存配额分配成功
+         * TODO: 很奇怪，这样就不需要具体判断tcp_rmem和tcp_wmem了吗？ */
 		return 1;
 	}
 
 	/* Under pressure. (we or our parents) */
+    /* 如果内存总开销超过tcp_mem[1]，则进入memory pressure状态 */
 	if ((parent_status > SOFT_LIMIT) ||
 			allocated > sk_prot_mem_limits(sk, 1))
 		sk_enter_memory_pressure(sk);
 
 	/* Over hard limit (we or our parents) */
+    /* 如果内存总开销超过tcp_mem[2]，则超过了limit要特殊处理啦
+     * 对于TCP会强制缩小sndbuf */
 	if ((parent_status == OVER_LIMIT) ||
 			(allocated > sk_prot_mem_limits(sk, 2)))
 		goto suppress_allocation;
 
 	/* guarantee minimum buffer size under pressure */
 	if (kind == SK_MEM_RECV) {
+        /* 如果是接收内存， 则只要分配的内存少于tcp_rmem[0]也是直接返回true，哪怕此时已经进入memory pressure了 */
 		if (atomic_read(&sk->sk_rmem_alloc) < prot->sysctl_rmem[0])
 			return 1;
 
 	} else { /* SK_MEM_SEND */
+        /* 如果是TCP流，则判断wmem_queued 是否超过tcp_wmem[0] */
 		if (sk->sk_type == SOCK_STREAM) {
 			if (sk->sk_wmem_queued < prot->sysctl_wmem[0])
 				return 1;
+        /* 否则用sk_wmem_alloc进行判断 */
 		} else if (atomic_read(&sk->sk_wmem_alloc) <
 			   prot->sysctl_wmem[0])
 				return 1;
 	}
 
+    /* 如果具体的协议有memory pressure标记 */
 	if (sk_has_memory_pressure(sk)) {
 		int alloc;
 
+        /* 如果不处于memory pressure状态，则直接返回true */
 		if (!sk_under_memory_pressure(sk))
 			return 1;
 		alloc = sk_sockets_allocated_read_positive(sk);
+        /* 如果发送内存+接收内存+提前分配的内存，没有超过tcp_mem的数量，也可以直接返回true */
 		if (sk_prot_mem_limits(sk, 2) > alloc *
 		    sk_mem_pages(sk->sk_wmem_queued +
 				 atomic_read(&sk->sk_rmem_alloc) +
@@ -2049,7 +2069,9 @@ int __sk_mem_schedule(struct sock *sk, int size, int kind)
 
 suppress_allocation:
 
+    /* 如果是TCP协议，则缩小该条TCP流的sndbuf（其实也只是配额而已） */
 	if (kind == SK_MEM_SEND && sk->sk_type == SOCK_STREAM) {
+        /* 将sndbuf缩小为当前已用空间的一半 */
 		sk_stream_moderate_sndbuf(sk);
 
 		/* Fail only if socket is _under_ its sndbuf.
@@ -2059,6 +2081,7 @@ suppress_allocation:
 			return 1;
 	}
 
+    /* 有trace可以跟踪mem schedule失败的情况哦 */
 	trace_sock_exceed_buf_limit(sk, prot, allocated);
 
 	/* Alas. Undo changes. */
@@ -2074,12 +2097,15 @@ EXPORT_SYMBOL(__sk_mem_schedule);
  *	__sk_reclaim - reclaim memory_allocated
  *	@sk: socket
  */
+/* 回收某一个sk的内存配额，重新将配额放回到全局的TCP memory pool中 */
 void __sk_mem_reclaim(struct sock *sk)
 {
+    /* 仅保留不超过一个page的内存量 */
 	sk_memory_allocated_sub(sk,
 				sk->sk_forward_alloc >> SK_MEM_QUANTUM_SHIFT);
 	sk->sk_forward_alloc &= SK_MEM_QUANTUM - 1;
 
+    /* 看看是否需要退出memory pressure状态 */
 	if (sk_under_memory_pressure(sk) &&
 	    (sk_memory_allocated(sk) < sk_prot_mem_limits(sk, 0)))
 		sk_leave_memory_pressure(sk);

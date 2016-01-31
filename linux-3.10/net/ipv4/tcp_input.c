@@ -208,6 +208,7 @@ static inline void TCP_ECN_queue_cwr(struct tcp_sock *tp)
 		tp->ecn_flags |= TCP_ECN_QUEUE_CWR;
 }
 
+/* 如果收到对端发送的带cwr标记的TCP包，则清除TCP_ECN_DEMAND_CWR标记 */
 static inline void TCP_ECN_accept_cwr(struct tcp_sock *tp, const struct sk_buff *skb)
 {
 	if (tcp_hdr(skb)->cwr)
@@ -4458,12 +4459,17 @@ static void tcp_ofo_queue(struct sock *sk)
 static bool tcp_prune_ofo_queue(struct sock *sk);
 static int tcp_prune_queue(struct sock *sk);
 
+/* 检查是否可以分配新的rmem，
+ * 返回0表示可以，返回-1表示不可以
+ */
 static int tcp_try_rmem_schedule(struct sock *sk, struct sk_buff *skb,
 				 unsigned int size)
 {
+    /* 如果sk_rmem_alloc不超过sk_rcvbuf，并且rmem也没有超过限制, 则直接返回0 */
 	if (atomic_read(&sk->sk_rmem_alloc) > sk->sk_rcvbuf ||
 	    !sk_rmem_schedule(sk, skb, size)) {
 
+        /* to be continued... */
 		if (tcp_prune_queue(sk) < 0)
 			return -1;
 
@@ -4702,6 +4708,7 @@ err:
 	return -ENOMEM;
 }
 
+/* 将skb放入接收队列或out-of-order队列 */
 static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 {
 	const struct tcphdr *th = tcp_hdr(skb);
@@ -4709,10 +4716,12 @@ static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 	int eaten = -1;
 	bool fragstolen = false;
 
+    /* 如果不带数据，直接丢弃 */
 	if (TCP_SKB_CB(skb)->seq == TCP_SKB_CB(skb)->end_seq)
 		goto drop;
 
 	skb_dst_drop(skb);
+    /* 去掉TCP包头的数据，仅保留应用层数据 */
 	__skb_pull(skb, th->doff * 4);
 
 	TCP_ECN_accept_cwr(tp, skb);
@@ -4723,11 +4732,14 @@ static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 	 *  Packets in sequence go to the receive queue.
 	 *  Out of sequence packets to the out_of_order_queue.
 	 */
+    /* 如果是按序到达的数据，则放入receive queue */
 	if (TCP_SKB_CB(skb)->seq == tp->rcv_nxt) {
+        /* 如果数据超过了接收窗口的限制，则要特殊处理：进入quickack模式，调度一个ack，并且把数据丢掉 */
 		if (tcp_receive_window(tp) == 0)
 			goto out_of_window;
 
 		/* Ok. In sequence. In window. */
+        /* 如果当前process context正在拷贝数据，而且位置也匹配 */
 		if (tp->ucopy.task == current &&
 		    tp->copied_seq == tp->rcv_nxt && tp->ucopy.len &&
 		    sock_owned_by_user(sk) && !tp->urg_data) {
@@ -4736,7 +4748,9 @@ static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 
 			__set_current_state(TASK_RUNNING);
 
+            /* 此时想将数据直接拷贝到用户态，必须把softirq给关了 */
 			local_bh_enable();
+            /* 将数据拷贝到iovec中 */
 			if (!skb_copy_datagram_iovec(skb, 0, tp->ucopy.iov, chunk)) {
 				tp->ucopy.len -= chunk;
 				tp->copied_seq += chunk;
@@ -4748,6 +4762,7 @@ static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 
 		if (eaten <= 0) {
 queue_and_out:
+            /* 如果skb没有被直接拷贝到user space的iovec, 同时分配rmem也失败了，则只好丢弃该skb */
 			if (eaten < 0 &&
 			    tcp_try_rmem_schedule(sk, skb, skb->truesize))
 				goto drop;
@@ -5093,6 +5108,7 @@ void tcp_cwnd_application_limited(struct sock *sk)
 	tp->snd_cwnd_stamp = tcp_time_stamp;
 }
 
+/* 判断是否应该增大sndbuf上限了 */
 static bool tcp_should_expand_sndbuf(const struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
@@ -5100,18 +5116,23 @@ static bool tcp_should_expand_sndbuf(const struct sock *sk)
 	/* If the user specified a specific send buffer setting, do
 	 * not modify it.
 	 */
+    /* 如果是用户指定的sndbuf大小，则不能调整 */
 	if (sk->sk_userlocks & SOCK_SNDBUF_LOCK)
 		return false;
 
 	/* If we are under global TCP memory pressure, do not expand.  */
+    /* 如果在memory pressure状态下，则不应该再增大sndbuf
+     * note: 这就是memory pressure发挥作用的一个场景 */
 	if (sk_under_memory_pressure(sk))
 		return false;
 
 	/* If we are under soft global TCP memory pressure, do not expand.  */
+    /* 如果TCP全局使用的内存超过了tcp_mem[0]，则也不会扩展sndbuf */
 	if (sk_memory_allocated(sk) >= sk_prot_mem_limits(sk, 0))
 		return false;
 
 	/* If we filled the congestion window, do not expand.  */
+    /* 如果数据发送受限于cwnd, 则也不需要扩展sndbuf */
 	if (tp->packets_out >= tp->snd_cwnd)
 		return false;
 
@@ -5124,10 +5145,12 @@ static bool tcp_should_expand_sndbuf(const struct sock *sk)
  *
  * PROBLEM: sndbuf expansion does not work well with largesend.
  */
+/* 当有数据被ACK掉了，则要调整sndbuf，同时也要唤醒BSD socket继续写数据到sndbuf */
 static void tcp_new_space(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
+    /* 如果需要增大sndbuf，则将sndbuf调整为cwnd的2倍 */
 	if (tcp_should_expand_sndbuf(sk)) {
 		int sndmem = SKB_TRUESIZE(max_t(u32,
 						tp->rx_opt.mss_clamp,
@@ -5136,18 +5159,25 @@ static void tcp_new_space(struct sock *sk)
 		int demanded = max_t(unsigned int, tp->snd_cwnd,
 				     tp->reordering + 1);
 		sndmem *= 2 * demanded;
+        /* sndbuf不能超过tcp_wmem[2] */
 		if (sndmem > sk->sk_sndbuf)
 			sk->sk_sndbuf = min(sndmem, sysctl_tcp_wmem[2]);
+        /* TODO： 这个变量的作用要好好总结一下，这里只是调整了sndbuf，并没有调整cwnd，它也更新了 */
 		tp->snd_cwnd_stamp = tcp_time_stamp;
 	}
 
+    /* TCP协议对应的处理函数：sk_stream_write_space() */
 	sk->sk_write_space(sk);
 }
 
+/* 如果sndbuf最近有skb被释放掉，则会打上SOCK_QUEUE_SHRUNK标记
+ * 此函数的作用就是判断是否有这个标记，如果有，则要及时通知sk有新内存被释放了
+ * 比如就可以继续将数据从用户控件拷贝到sndbuf中了 */
 static void tcp_check_space(struct sock *sk)
 {
 	if (sock_flag(sk, SOCK_QUEUE_SHRUNK)) {
 		sock_reset_flag(sk, SOCK_QUEUE_SHRUNK);
+        /* 如果有对应的BSD socket, 并且之前它被设置了SOCK_NOSPACE标记，则要唤醒他 */
 		if (sk->sk_socket &&
 		    test_bit(SOCK_NOSPACE, &sk->sk_socket->flags))
 			tcp_new_space(sk);

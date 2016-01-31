@@ -754,11 +754,17 @@ static inline bool sk_acceptq_is_full(const struct sock *sk)
 /*
  * Compute minimal free write space needed to queue new packets.
  */
+/* 发送缓存的剩余空间必须超过已占用空间的一半，才能继续写新数据
+ * 即满足(sndbuf - queued) >= queued/2时，才能写新数据
+ * 而free = sndbuf - queued，带入变换后，得
+ * free >= (sndbuf - free)/2  ==> free >= 1/3 * sndbuf
+ * 所以就得出：只有1/3的sndbuf被释放后，才会去触发写新数据到sndbuf中 */
 static inline int sk_stream_min_wspace(const struct sock *sk)
 {
 	return sk->sk_wmem_queued >> 1;
 }
 
+/* 发送缓存剩余的配额大小 */
 static inline int sk_stream_wspace(const struct sock *sk)
 {
 	return sk->sk_sndbuf - sk->sk_wmem_queued;
@@ -1123,6 +1129,7 @@ static inline bool sk_has_memory_pressure(const struct sock *sk)
 	return sk->sk_prot->memory_pressure != NULL;
 }
 
+/* 判断是否处于memory pressure状态 */
 static inline bool sk_under_memory_pressure(const struct sock *sk)
 {
 	if (!sk->sk_prot->memory_pressure)
@@ -1134,6 +1141,7 @@ static inline bool sk_under_memory_pressure(const struct sock *sk)
 	return !!*sk->sk_prot->memory_pressure;
 }
 
+/* 离开memory pressure状态 */
 static inline void sk_leave_memory_pressure(struct sock *sk)
 {
 	int *memory_pressure = sk->sk_prot->memory_pressure;
@@ -1148,6 +1156,7 @@ static inline void sk_leave_memory_pressure(struct sock *sk)
 		struct cg_proto *cg_proto = sk->sk_cgrp;
 		struct proto *prot = sk->sk_prot;
 
+        /* 将所有的子cgroup的memory pressure状态也清空 */
 		for (; cg_proto; cg_proto = parent_cg_proto(prot, cg_proto))
 			if (*cg_proto->memory_pressure)
 				*cg_proto->memory_pressure = 0;
@@ -1173,6 +1182,12 @@ static inline void sk_enter_memory_pressure(struct sock *sk)
 	sk->sk_prot->enter_memory_pressure(sk);
 }
 
+/* 根据index值，返回tcp_mem数组中的值
+ * net.ipv4.tcp_mem: min, pressure, max  单位: page
+ * min: tcp的整体内存开销低于这个值，就一般分配内存都顺利
+ * pressure: 如果超过这个值，则进入memory pressure状态，分配内存时就会有一些限制
+ * max: 整体的内存消耗的最大值
+ */
 static inline long sk_prot_mem_limits(const struct sock *sk, int index)
 {
 	long *prot = sk->sk_prot->sysctl_mem;
@@ -1217,6 +1232,8 @@ sk_memory_allocated(const struct sock *sk)
 	return atomic_long_read(prot->memory_allocated);
 }
 
+/* 增加amt数量的内存分配，返回已经分配的mem数量
+ * 同时也会更新mem status */
 static inline long
 sk_memory_allocated_add(struct sock *sk, int amt, int *parent_status)
 {
@@ -1387,11 +1404,14 @@ static inline struct inode *SOCK_INODE(struct socket *socket)
 extern int __sk_mem_schedule(struct sock *sk, int size, int kind);
 extern void __sk_mem_reclaim(struct sock *sk);
 
+/* sk mem的最小单位是一个page size，即4K */
 #define SK_MEM_QUANTUM ((int)PAGE_SIZE)
+/* 比如SK_MEM_QUANTUM是4K，那么对应的shift就是12 */
 #define SK_MEM_QUANTUM_SHIFT ilog2(SK_MEM_QUANTUM)
 #define SK_MEM_SEND	0
 #define SK_MEM_RECV	1
 
+/* 返回amt大小的内存对应的page数 */
 static inline int sk_mem_pages(int amt)
 {
 	return (amt + SK_MEM_QUANTUM - 1) >> SK_MEM_QUANTUM_SHIFT;
@@ -1408,10 +1428,14 @@ static inline bool sk_wmem_schedule(struct sock *sk, int size)
 {
 	if (!sk_has_account(sk))
 		return true;
+    /* 如果请求的size少于已经提前分配的内存，就直接返回true，
+     * 否则就需要尝试重新分配内存，更新，forward_alloc
+     */
 	return size <= sk->sk_forward_alloc ||
 		__sk_mem_schedule(sk, size, SK_MEM_SEND);
 }
 
+/* 判断rmem是否超过上限, 如果没有超过上限则返回true */
 static inline bool
 sk_rmem_schedule(struct sock *sk, struct sk_buff *skb, int size)
 {
@@ -1422,10 +1446,13 @@ sk_rmem_schedule(struct sock *sk, struct sk_buff *skb, int size)
 		skb_pfmemalloc(skb);
 }
 
+/* 如果某一条流提前分配的内存超过一个page，则应该回收到整个TCP的memory pool中
+ * 避免某一条流占用了大量的全局内存，但却没有实际使用的情况*/
 static inline void sk_mem_reclaim(struct sock *sk)
 {
 	if (!sk_has_account(sk))
 		return;
+    /* 如果某条流提前分配的内存超过一个page，则回收一部分 */
 	if (sk->sk_forward_alloc >= SK_MEM_QUANTUM)
 		__sk_mem_reclaim(sk);
 }
@@ -1445,6 +1472,7 @@ static inline void sk_mem_charge(struct sock *sk, int size)
 	sk->sk_forward_alloc -= size;
 }
 
+/* 释放内存后，更新sk->sk_forward_alloc */
 static inline void sk_mem_uncharge(struct sock *sk, int size)
 {
 	if (!sk_has_account(sk))
@@ -1452,10 +1480,15 @@ static inline void sk_mem_uncharge(struct sock *sk, int size)
 	sk->sk_forward_alloc += size;
 }
 
+/* 发送缓存snfbuf释放skb,
+ * 如发送的数据被按序确认后，会在tcp_clean_rtx_queue()中调用 */
 static inline void sk_wmem_free_skb(struct sock *sk, struct sk_buff *skb)
 {
+    /* 标记sndbuf被占用的空间最近被减少了 */
 	sock_set_flag(sk, SOCK_QUEUE_SHRUNK);
+    /* 减少sk_wmem_queued */
 	sk->sk_wmem_queued -= skb->truesize;
+    /* 增加sk->sk_forward_alloc值 */
 	sk_mem_uncharge(sk, skb->truesize);
 	__kfree_skb(skb);
 }
@@ -2043,11 +2076,15 @@ static inline void skb_set_owner_w(struct sk_buff *skb, struct sock *sk)
 	atomic_add(skb->truesize, &sk->sk_wmem_alloc);
 }
 
+/* 给skb设置owner */
 static inline void skb_set_owner_r(struct sk_buff *skb, struct sock *sk)
 {
 	skb_orphan(skb);
+    /* 该skb给当前sk所有 */
 	skb->sk = sk;
+    /* 设置析构函数 */
 	skb->destructor = sock_rfree;
+    /* 更新memory控制相关值 */
 	atomic_add(skb->truesize, &sk->sk_rmem_alloc);
 	sk_mem_charge(sk, skb->truesize);
 }

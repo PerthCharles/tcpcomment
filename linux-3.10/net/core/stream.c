@@ -25,11 +25,14 @@
  *
  * FIXME: write proper description
  */
+/* 当sndbuf被释放出新空间后，需要唤醒写进程 */
 void sk_stream_write_space(struct sock *sk)
 {
 	struct socket *sock = sk->sk_socket;
 	struct socket_wq *wq;
 
+    /* 只有1/3的sndbuf被释放后，才会去触发写新数据到sndbuf中
+     * 具体解释请参见sk_stream_min_wspace()函数上方注解 */
 	if (sk_stream_wspace(sk) >= sk_stream_min_wspace(sk) && sock) {
 		clear_bit(SOCK_NOSPACE, &sock->flags);
 
@@ -121,17 +124,22 @@ EXPORT_SYMBOL(sk_stream_wait_close);
  * @sk: socket to wait for memory
  * @timeo_p: for how long
  */
+/* 等待内存 */
 int sk_stream_wait_memory(struct sock *sk, long *timeo_p)
 {
 	int err = 0;
-	long vm_wait = 0;
+	long vm_wait = 0;   /* vm_wait非零表示在等待全局配额*/
 	long current_timeo = *timeo_p;
 	DEFINE_WAIT(wait);
 
+    /* 如果sk的sndbuf还有剩余空间，那么就重设一个timeo值 */
+    /* 其实sndbuf没用完进入wait memory状态，就意味着是memory pressure状态了，
+     * 关键在于等待别的流释放内存 */
 	if (sk_stream_memory_free(sk))
 		current_timeo = vm_wait = (net_random() % (HZ / 5)) + 2;
 
 	while (1) {
+        /* 设置memory不足标记 */
 		set_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
 
 		prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
@@ -142,11 +150,15 @@ int sk_stream_wait_memory(struct sock *sk, long *timeo_p)
 			goto do_nonblock;
 		if (signal_pending(current))
 			goto do_interrupted;
+        /* TODO: 咦，这里用clear掉SOCK_ASYNC_NOSPACE */
 		clear_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
+        /* vm_wait等于零就意味着不是在等待全局配额，
+         * 所以如果此时sndbuf有空间了，则可以停止wait了 */
 		if (sk_stream_memory_free(sk) && !vm_wait)
 			break;
 
 		set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
+        /* 标记有writer在等待写sk, 是进入等待状态前的准备 */
 		sk->sk_write_pending++;
 		sk_wait_event(sk, &current_timeo, sk->sk_err ||
 						  (sk->sk_shutdown & SEND_SHUTDOWN) ||
@@ -154,6 +166,7 @@ int sk_stream_wait_memory(struct sock *sk, long *timeo_p)
 						  !vm_wait));
 		sk->sk_write_pending--;
 
+        /* vm_wait非零表示在等待全局内存配额，而且只wait一次 */
 		if (vm_wait) {
 			vm_wait -= current_timeo;
 			current_timeo = *timeo_p;

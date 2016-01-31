@@ -276,6 +276,7 @@ static inline void refdst_drop(unsigned long refdst)
  *
  * Drops dst reference count if a reference was taken.
  */
+/* 释放skb的路由信息 */
 static inline void skb_dst_drop(struct sk_buff *skb)
 {
 	if (skb->_skb_refdst) {
