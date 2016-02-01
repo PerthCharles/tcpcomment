@@ -1097,6 +1097,7 @@ extern void tcp_select_initial_window(int __space, __u32 mss,
 				      int wscale_ok, __u8 *rcv_wscale,
 				      __u32 init_rcv_wnd);
 
+/* 默认的sysctl_tcp_adv_win_scale = 1，此时该函数的效果就是返回space的一半 */
 static inline int tcp_win_from_space(int space)
 {
 	return sysctl_tcp_adv_win_scale<=0 ?

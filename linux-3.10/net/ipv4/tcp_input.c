@@ -411,6 +411,7 @@ void tcp_init_buffer_space(struct sock *sk)
 }
 
 /* 5. Recalculate window clamp after socket hit its memory bounds. */
+/* 重新计算sk_rcvbuf和rcv_ssthresh */
 static void tcp_clamp_window(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -418,6 +419,7 @@ static void tcp_clamp_window(struct sock *sk)
 
 	icsk->icsk_ack.quick = 0;
 
+    /* 如果tcp_rmem[2]还允许调大sk_rcvbuf，则进一步增大sk_rcvbuf */
 	if (sk->sk_rcvbuf < sysctl_tcp_rmem[2] &&
 	    !(sk->sk_userlocks & SOCK_RCVBUF_LOCK) &&
 	    !sk_under_memory_pressure(sk) &&
@@ -425,6 +427,7 @@ static void tcp_clamp_window(struct sock *sk)
 		sk->sk_rcvbuf = min(atomic_read(&sk->sk_rmem_alloc),
 				    sysctl_tcp_rmem[2]);
 	}
+    /* 如果不能再调大sk_rcvbuf了，则只能强制的缩小rcv_ssthresh到2MSS */
 	if (atomic_read(&sk->sk_rmem_alloc) > sk->sk_rcvbuf)
 		tp->rcv_ssthresh = min(tp->window_clamp, 2U * tp->advmss);
 }
@@ -4465,18 +4468,21 @@ static int tcp_prune_queue(struct sock *sk);
 static int tcp_try_rmem_schedule(struct sock *sk, struct sk_buff *skb,
 				 unsigned int size)
 {
-    /* 如果sk_rmem_alloc不超过sk_rcvbuf，并且rmem也没有超过限制, 则直接返回0 */
+    /* 如果sk_rmem_alloc不超过sk_rcvbuf，并且也没有超过tcp_rmem限制, 则直接返回0 */
 	if (atomic_read(&sk->sk_rmem_alloc) > sk->sk_rcvbuf ||
 	    !sk_rmem_schedule(sk, skb, size)) {
 
-        /* to be continued... */
+        /* 如果修剪接收队列后，依然mem不足，只好返回-1表示不可以分配新内存了, 从而会导致数据包被丢弃  */
 		if (tcp_prune_queue(sk) < 0)
 			return -1;
 
+        /* 如果是整体内存超过tcp_rmem限制 */
 		if (!sk_rmem_schedule(sk, skb, size)) {
+            /* 如果OFO为空，没有mem腾出来了，只能返回-1 */
 			if (!tcp_prune_ofo_queue(sk))
 				return -1;
 
+            /* 上面会腾出OFO空间，所以还要判断一次。如果腾空OFO后，还是无法满足条件，也是只能返回-1 */
 			if (!sk_rmem_schedule(sk, skb, size))
 				return -1;
 		}
@@ -4835,6 +4841,7 @@ drop:
 	tcp_data_queue_ofo(sk, skb);
 }
 
+/* 场景1： 如果在合并OFO queue时发现，某个skb的数据完全是冗余的，则直接将这个skb从列表中删掉 */
 static struct sk_buff *tcp_collapse_one(struct sock *sk, struct sk_buff *skb,
 					struct sk_buff_head *list)
 {
@@ -4845,8 +4852,10 @@ static struct sk_buff *tcp_collapse_one(struct sock *sk, struct sk_buff *skb,
 
 	__skb_unlink(skb, list);
 	__kfree_skb(skb);
+    /* 该计数器记录某个SKB中的数据完全是冗余，而被删除的次数 */
 	NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPRCVCOLLAPSED);
 
+    /* 返回下一个skb的指针，如果要删除的skb是tail，那么返回NULL */
 	return next;
 }
 
@@ -4858,6 +4867,8 @@ static struct sk_buff *tcp_collapse_one(struct sock *sk, struct sk_buff *skb,
  * Segments with FIN/SYN are not collapsed (only because this
  * simplifies code)
  */
+/* 将序号连续的skb进行合并, 非常耗时的动作！ */
+/* TODO: 这个函数不好理解，理解了宏观的流程再来详细分析 */
 static void
 tcp_collapse(struct sock *sk, struct sk_buff_head *list,
 	     struct sk_buff *head, struct sk_buff *tail,
@@ -4870,6 +4881,7 @@ tcp_collapse(struct sock *sk, struct sk_buff_head *list,
 	 * the point where collapsing can be useful. */
 	skb = head;
 restart:
+    /* TODO: end_of_skbs的含义？ */
 	end_of_skbs = true;
 	skb_queue_walk_from_safe(list, skb, n) {
 		if (skb == tail)
@@ -4877,8 +4889,10 @@ restart:
 		/* No new bits? It is possible on ofo queue. */
 		if (!before(start, TCP_SKB_CB(skb)->end_seq)) {
 			skb = tcp_collapse_one(sk, skb, list);
+            /* 如果使用tcp_collapse_one()删除的skb是tail,说明遍历完了，直接break */
 			if (!skb)
 				break;
+            /* TODO: 这里为什么回restart ? */
 			goto restart;
 		}
 
@@ -4888,7 +4902,9 @@ restart:
 		 *   overlaps to the next one.
 		 */
 		if (!tcp_hdr(skb)->syn && !tcp_hdr(skb)->fin &&
+            /* 如果skb->len连truesize的一半都不到 */
 		    (tcp_win_from_space(skb->truesize) > skb->len ||
+            /* 或者skb的起始序号在start之前，应该停止合并。 */
 		     before(TCP_SKB_CB(skb)->seq, start))) {
 			end_of_skbs = false;
 			break;
@@ -4964,6 +4980,8 @@ restart:
 /* Collapse ofo queue. Algorithm: select contiguous sequence of skbs
  * and tcp_collapse() them until all the queue is collapsed.
  */
+/* 尽量合并OFO queue中的skb */
+/* 从遍历过程就可以看出来，这是一个非常耗时的行为 */
 static void tcp_collapse_ofo_queue(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -4987,9 +5005,11 @@ static void tcp_collapse_ofo_queue(struct sock *sk)
 
 		/* Segment is terminated when we see gap or when
 		 * we are at the end of all the queue. */
+        /* 从判断条件中可知，OFO queue是彻底乱序的，后面包的seq是可能小于前面包的seq的 */
 		if (!skb ||
 		    after(TCP_SKB_CB(skb)->seq, end) ||
 		    before(TCP_SKB_CB(skb)->end_seq, start)) {
+            /* 在发现gap后，就停止查找，将现有[start, end]范围内的数据进行合并 */
 			tcp_collapse(sk, &tp->out_of_order_queue,
 				     head, skb, start, end);
 			head = skb;
@@ -4998,6 +5018,7 @@ static void tcp_collapse_ofo_queue(struct sock *sk)
 			/* Start new segment */
 			start = TCP_SKB_CB(skb)->seq;
 			end = TCP_SKB_CB(skb)->end_seq;
+        /* 如果发现了连续的数据，则调整start或end */
 		} else {
 			if (before(TCP_SKB_CB(skb)->seq, start))
 				start = TCP_SKB_CB(skb)->seq;
@@ -5011,12 +5032,15 @@ static void tcp_collapse_ofo_queue(struct sock *sk)
  * Purge the out-of-order queue.
  * Return true if queue was pruned.
  */
+/* 对OFO queue的prune效果：直接清空！  后果其实也是很严重的，但在内存怎么都不够用的情况，只好出此下策 */
 static bool tcp_prune_ofo_queue(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	bool res = false;
 
+    /* 如果OFO queue不为空，则将其清空 */
 	if (!skb_queue_empty(&tp->out_of_order_queue)) {
+        /* OFO queue的prune就是直接清空，该计数器计算的是OFO queue被清空的次数 */
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_OFOPRUNED);
 		__skb_queue_purge(&tp->out_of_order_queue);
 
@@ -5025,8 +5049,10 @@ static bool tcp_prune_ofo_queue(struct sock *sk)
 		 * is in a sad state like this, we care only about integrity
 		 * of the connection not performance.
 		 */
+        /* 将SACK信息清空 */
 		if (tp->rx_opt.sack_ok)
 			tcp_sack_reset(&tp->rx_opt);
+        /* 清空OFO queue之后，更新sk_forward_alloc */
 		sk_mem_reclaim(sk);
 		res = true;
 	}
@@ -5040,35 +5066,49 @@ static bool tcp_prune_ofo_queue(struct sock *sk)
  * until the socket owning process reads some of the data
  * to stabilize the situation.
  */
+/* 尝试减少receive queue和out-of-order queue的内存开销 */
 static int tcp_prune_queue(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	SOCK_DEBUG(sk, "prune_queue: c=%x\n", tp->copied_seq);
 
+    /* 该计数器记录tcp_prune_queue()被调用的次数，即尝试减少receive queue和OFO queue内存开销的次数 */
+    /* 由于压缩OFO queue和receive queue的过程都是非常耗时的操作，因此即使是单单的调用这个函数的次数也应该很少才正常 */
 	NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_PRUNECALLED);
 
+    /* 如果是接受缓存占用的内存开销超过上限sk_rcvbuf导致的prune，
+     * 则尝试调大sk_rcvbuf，如果调不大，就要限制rcv_ssthresh到2MSS */
 	if (atomic_read(&sk->sk_rmem_alloc) >= sk->sk_rcvbuf)
 		tcp_clamp_window(sk);
+    /* 如果是memory pressure状态导致的prune，则限制rcv_ssthresh到4MSS */
 	else if (sk_under_memory_pressure(sk))
 		tp->rcv_ssthresh = min(tp->rcv_ssthresh, 4U * tp->advmss);
 
+    /* 首先合并OFO queue中的skb */
 	tcp_collapse_ofo_queue(sk);
+    /* 如果receive queue不为空，则也要合并 */
 	if (!skb_queue_empty(&sk->sk_receive_queue))
 		tcp_collapse(sk, &sk->sk_receive_queue,
 			     skb_peek(&sk->sk_receive_queue),
 			     NULL,
 			     tp->copied_seq, tp->rcv_nxt);
+    /* 压缩queue之后，可能能腾出一些mem，sk_rmem_alloc可能有机会缩小 */
 	sk_mem_reclaim(sk);
 
+    /* 如果合并成功后sk_rmem_alloc比sk_rcvbuf小了，则返回0，表示合并成功，mem开销已经没问题了, 
+     * 可以继续往receive queue放数据了 */
 	if (atomic_read(&sk->sk_rmem_alloc) <= sk->sk_rcvbuf)
 		return 0;
 
 	/* Collapsing did not help, destructive actions follow.
 	 * This must not ever occur. */
+    /* 以下的代码应该永远不要被触发 */
 
+    /* 如果普通的合并操作还是没能腾出足够的空间出来，那么就需要对OFO queue进行丢弃 */
 	tcp_prune_ofo_queue(sk);
 
+    /* 如果清空OFO queue之后，sk_rmem_alloc没超过限制，依然返回0，表示可以继续往receive queue中放数据了 */
 	if (atomic_read(&sk->sk_rmem_alloc) <= sk->sk_rcvbuf)
 		return 0;
 
@@ -5076,9 +5116,12 @@ static int tcp_prune_queue(struct sock *sk)
 	 * drop receive data on the floor.  It will get retransmitted
 	 * and hopefully then we'll have sufficient space.
 	 */
+    /* 如果清空了OFO queue后，mem还是不够，那么只好返回-1让sk默认的开始丢数据包了
+     * rcvpruned计数器表示需要进入此种窘境的次数 */
 	NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_RCVPRUNED);
 
 	/* Massive buffer overcommit. */
+    /* 将用于判断fast path的flag清空，使用slow path来处理接收到的数据包 */
 	tp->pred_flags = 0;
 	return -1;
 }

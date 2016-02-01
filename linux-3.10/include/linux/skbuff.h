@@ -1973,6 +1973,7 @@ static inline int skb_orphan_frags(struct sk_buff *skb, gfp_t gfp_mask)
  *	list lock and the caller must hold the relevant locks to use it.
  */
 extern void skb_queue_purge(struct sk_buff_head *list);
+/* 将一个skb list完全清空，典型应用场景：在内存严重不足时，调用tcp_prune_ofo_queue()来清空OFO queue */
 static inline void __skb_queue_purge(struct sk_buff_head *list)
 {
 	struct sk_buff *skb;
