@@ -411,7 +411,7 @@ void tcp_init_buffer_space(struct sock *sk)
 }
 
 /* 5. Recalculate window clamp after socket hit its memory bounds. */
-/* 重新计算sk_rcvbuf和rcv_ssthresh */
+/* 重新计算sk_rcvbuf和rcv_ssthresh, 主要的动机是：try to increase the quota for receive buffer */
 static void tcp_clamp_window(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -4881,8 +4881,13 @@ tcp_collapse(struct sock *sk, struct sk_buff_head *list,
 	 * the point where collapsing can be useful. */
 	skb = head;
 restart:
-    /* TODO: end_of_skbs的含义？ */
+    /* TODO-DONE: end_of_skbs的含义？
+     * 如果为true，表示下面找start的过程中，已经遍历到了end skb，都没有找到可以进行合并的start，
+     * 此时可以直接返回了，没有合并的必要了 */
 	end_of_skbs = true;
+    /* 这个loop的作用：找到可以作为真实的start的序号。
+     * 为什么存在这个过程，而不是直接用caller指定的start？
+     * 因为有一些skb是不允许collapse的。比如带有SYN或FIN标记的数据包 */
 	skb_queue_walk_from_safe(list, skb, n) {
 		if (skb == tail)
 			break;
@@ -4892,19 +4897,20 @@ restart:
             /* 如果使用tcp_collapse_one()删除的skb是tail,说明遍历完了，直接break */
 			if (!skb)
 				break;
-            /* TODO: 这里为什么回restart ? */
+            /* skb已经更新成了新的next,回到skb位置继续找合适的start */
 			goto restart;
 		}
 
+        /* 确定真实的start的条件 */
 		/* The first skb to collapse is:
-		 * - not SYN/FIN and
-		 * - bloated or contains data before "start" or
-		 *   overlaps to the next one.
+		 * - not SYN/FIN(条件a) and
+		 * - bloated(条件b) or contains data before "start"(条件c) or
+		 *   overlaps to the next one.(条件d)
 		 */
-		if (!tcp_hdr(skb)->syn && !tcp_hdr(skb)->fin &&
-            /* 如果skb->len连truesize的一半都不到 */
+		if (!tcp_hdr(skb)->syn && !tcp_hdr(skb)->fin && 
+            /* 条件b: 如果skb->len连truesize的一半都不到 */
 		    (tcp_win_from_space(skb->truesize) > skb->len ||
-            /* 或者skb的起始序号在start之前，应该停止合并。 */
+            /* 条件c:skb的起始序号在start之前， */
 		     before(TCP_SKB_CB(skb)->seq, start))) {
 			end_of_skbs = false;
 			break;
@@ -4913,6 +4919,7 @@ restart:
 		if (!skb_queue_is_last(list, skb)) {
 			struct sk_buff *next = skb_queue_next(list, skb);
 			if (next != tail &&
+                /* 条件d: skb与next存在overlap */
 			    TCP_SKB_CB(skb)->end_seq != TCP_SKB_CB(next)->seq) {
 				end_of_skbs = false;
 				break;
@@ -4920,11 +4927,14 @@ restart:
 		}
 
 		/* Decided to skip this, advance start seq. */
+        /* 如果当前遍历到的skb不满足作为start的条件，则跳过这个skb, 增大start */
 		start = TCP_SKB_CB(skb)->end_seq;
 	}
+    /* 如果所有skb都不满足合并条件，或者带有syn、fin标记，则停止合并 */
 	if (end_of_skbs || tcp_hdr(skb)->syn || tcp_hdr(skb)->fin)
 		return;
 
+    /* 将[start, end]区间的内容合并 */
 	while (before(start, end)) {
 		struct sk_buff *nskb;
 		unsigned int header = skb_headroom(skb);
@@ -4935,20 +4945,27 @@ restart:
 			return;
 		if (end - start < copy)
 			copy = end - start;
+        /* 首先会分配一个page作为新的skb内存空间，copy值就表示是这个page内，能放入的数据量 */
 		nskb = alloc_skb(copy + header, GFP_ATOMIC);
 		if (!nskb)
 			return;
 
+        /* 预留MAC头、IP头、TCP头 */
 		skb_set_mac_header(nskb, skb_mac_header(skb) - skb->head);
 		skb_set_network_header(nskb, (skb_network_header(skb) -
 					      skb->head));
 		skb_set_transport_header(nskb, (skb_transport_header(skb) -
 						skb->head));
 		skb_reserve(nskb, header);
+        /* 拷贝头部信息 */
 		memcpy(nskb->head, skb->head, header);
+        /* 拷贝skb control block信息 */
 		memcpy(nskb->cb, skb->cb, sizeof(skb->cb));
+        /* 在拷贝数据前，seq和end_seq都设置为start */
 		TCP_SKB_CB(nskb)->seq = TCP_SKB_CB(nskb)->end_seq = start;
+        /* 将新skb插入到当前skb之前 */
 		__skb_queue_before(list, skb, nskb);
+        /* 设置skb与sk关联，并更新sk->sk_forward_alloc值 */
 		skb_set_owner_r(nskb, sk);
 
 		/* Copy data, releasing collapsed skbs. */
@@ -4957,14 +4974,17 @@ restart:
 			int size = TCP_SKB_CB(skb)->end_seq - start;
 
 			BUG_ON(offset < 0);
+            /* size表示当前skb需要拷贝的数据量 */
 			if (size > 0) {
 				size = min(copy, size);
 				if (skb_copy_bits(skb, offset, skb_put(nskb, size), size))
 					BUG();
 				TCP_SKB_CB(nskb)->end_seq += size;
+                /* 拷贝数据后，更新copy和start */
 				copy -= size;
 				start += size;
 			}
+            /* 如果一个skb的数据都拷贝完了，则要将这个skb删除 */
 			if (!before(start, TCP_SKB_CB(skb)->end_seq)) {
 				skb = tcp_collapse_one(sk, skb, list);
 				if (!skb ||
@@ -5067,6 +5087,9 @@ static bool tcp_prune_ofo_queue(struct sock *sk)
  * to stabilize the situation.
  */
 /* 尝试减少receive queue和out-of-order queue的内存开销 */
+/* ADI注解：tcp_prune_queue() is called when socket has exhausted its quota of receive buffer.
+ * The idea is that we can still try to generate some space out by collapsing queues.
+ */
 static int tcp_prune_queue(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
