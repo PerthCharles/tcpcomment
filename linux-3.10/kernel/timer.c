@@ -718,6 +718,7 @@ static struct tvec_base *lock_timer_base(struct timer_list *timer,
 	}
 }
 
+/* 修改timer的expire值 */
 static inline int
 __mod_timer(struct timer_list *timer, unsigned long expires,
 						bool pending_only, int pinned)
@@ -763,6 +764,7 @@ __mod_timer(struct timer_list *timer, unsigned long expires,
 		}
 	}
 
+    /* 修改expires值 */
 	timer->expires = expires;
 	internal_add_timer(base, timer);
 
@@ -847,6 +849,7 @@ unsigned long apply_slack(struct timer_list *timer, unsigned long expires)
  * (ie. mod_timer() of an inactive timer returns 0, mod_timer() of an
  * active timer returns 1.)
  */
+/* 修改一个timer的超时时间 */
 int mod_timer(struct timer_list *timer, unsigned long expires)
 {
 	expires = apply_slack(timer, expires);

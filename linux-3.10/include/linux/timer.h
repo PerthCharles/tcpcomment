@@ -9,17 +9,18 @@
 
 struct tvec_base;
 
+/* linux中的timer实现 */
 struct timer_list {
 	/*
 	 * All fields that change during normal runtime grouped to the
 	 * same cacheline
 	 */
 	struct list_head entry;
-	unsigned long expires;
+	unsigned long expires;      /* timer对应的超时时刻， the numbers of clock ticks after which the timer should fire */
 	struct tvec_base *base;
 
-	void (*function)(unsigned long);
-	unsigned long data;
+	void (*function)(unsigned long);    /* timer对应的处理函数 */
+	unsigned long data;                 /* 传递给处理函数的参数 */
 
 	int slack;
 
@@ -166,6 +167,7 @@ static inline void init_timer_on_stack_key(struct timer_list *timer,
  *
  * return value: 1 if the timer is pending, 0 if not.
  */
+/* 返回timer是否处于pending状态 */
 static inline int timer_pending(const struct timer_list * timer)
 {
 	return timer->entry.next != NULL;

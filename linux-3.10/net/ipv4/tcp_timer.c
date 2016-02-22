@@ -210,6 +210,7 @@ static int tcp_write_timeout(struct sock *sk)
 		retry_until = sysctl_tcp_retries2;
 		if (sock_flag(sk, SOCK_DEAD)) {
             /* 如果已经是一个orphan的socket，并且它的rto还没有达到120s，则考虑再给它一点活路 */
+            /* 关于orphaned socket: datached from the process context but exists to do some cleanup work */
 			const int alive = (icsk->icsk_rto < TCP_RTO_MAX);
 
 			retry_until = tcp_orphan_retries(sk, alive);
@@ -472,19 +473,23 @@ void tcp_retransmit_timer(struct sock *sk)
 		int mib_idx;
 
 		if (icsk->icsk_ca_state == TCP_CA_Recovery) {
+            /* 在recovery状态超时 */
 			if (tcp_is_sack(tp))
 				mib_idx = LINUX_MIB_TCPSACKRECOVERYFAIL;
 			else
 				mib_idx = LINUX_MIB_TCPRENORECOVERYFAIL;
 		} else if (icsk->icsk_ca_state == TCP_CA_Loss) {
+            /* 在loss状态超时 */
 			mib_idx = LINUX_MIB_TCPLOSSFAILURES;
 		} else if ((icsk->icsk_ca_state == TCP_CA_Disorder) ||
 			   tp->sacked_out) {
+            /* 在disorder状态超时 */
 			if (tcp_is_sack(tp))
 				mib_idx = LINUX_MIB_TCPSACKFAILURES;
 			else
 				mib_idx = LINUX_MIB_TCPRENOFAILURES;
 		} else {
+            /* 直接超时 */
 			mib_idx = LINUX_MIB_TCPTIMEOUTS;
 		}
 		NET_INC_STATS_BH(sock_net(sk), mib_idx);

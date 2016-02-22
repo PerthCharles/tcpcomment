@@ -2607,6 +2607,7 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 	}
 }
 
+/* 重传一个skb */
 int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -2614,6 +2615,7 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 
 	if (err == 0) {
 		/* Update global TCP statistics. */
+        /* 如果重传成功，则更新计数器 */
 		TCP_INC_STATS(sock_net(sk), TCP_MIB_RETRANSSEGS);
 
 		tp->total_retrans++;
@@ -2635,6 +2637,7 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 		if (!tp->retrans_stamp)
 			tp->retrans_stamp = TCP_SKB_CB(skb)->when;
 
+        /* 记录用于推断出unnecessary retransmission需要的DSACK数量 */
 		tp->undo_retrans += tcp_skb_pcount(skb);
 
 		/* snd_nxt is stored to detect loss of retransmitted segment,

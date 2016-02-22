@@ -278,6 +278,7 @@ struct tcp_sock {
      * 即需要重传的数据包的最大序号。*/
 	u32     retransmit_high;	/* L-bits may be on up to this seqno */
 
+    /* TODO: 理解该变量的内含 */
 	u32	lost_retrans_low;	/* Sent seq after any rxmit (lowest) */
 
 	u32	prior_ssthresh; /* ssthresh saved at recovery start	*/
