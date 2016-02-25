@@ -1135,6 +1135,7 @@ static void tcp_adjust_fackets_out(struct sock *sk, const struct sk_buff *skb,
 /* Pcount in the middle of the write queue got changed, we need to do various
  * tweaks to fix counters
  */
+/* 当skb从write queue的半道移除后，要更新相关的计数器 */
 static void tcp_adjust_pcount(struct sock *sk, const struct sk_buff *skb, int decr)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -2407,6 +2408,7 @@ u32 __tcp_select_window(struct sock *sk)
 }
 
 /* Collapses two adjacent SKB's during retransmission. */
+/* 在重传阶段，将skb和skb->next合并 */
 static void tcp_collapse_retrans(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -2420,8 +2422,10 @@ static void tcp_collapse_retrans(struct sock *sk, struct sk_buff *skb)
 
 	tcp_highest_sack_combine(sk, next_skb, skb);
 
+    /* 将被动合并的skb从write_queue中移除 */
 	tcp_unlink_write_queue(next_skb, sk);
 
+    /* 将next_skb的linear data拷贝的skb中 */
 	skb_copy_from_linear_data(next_skb, skb_put(skb, next_skb_size),
 				  next_skb_size);
 
@@ -2447,24 +2451,31 @@ static void tcp_collapse_retrans(struct sock *sk, struct sk_buff *skb)
 	if (next_skb == tp->retransmit_skb_hint)
 		tp->retransmit_skb_hint = skb;
 
+    /* 由于next_skb从队列中移除了，所以要更新相关计数 */
 	tcp_adjust_pcount(sk, next_skb, tcp_skb_pcount(next_skb));
 
 	sk_wmem_free_skb(sk, next_skb);
 }
 
 /* Check if coalescing SKBs is legal. */
+/* 判断skb能否参与合并 */
 static bool tcp_can_collapse(const struct sock *sk, const struct sk_buff *skb)
 {
+    /* 如果该skb由于TSO包含多个数据包，那么该skb不能参与合并 */
 	if (tcp_skb_pcount(skb) > 1)
 		return false;
 	/* TODO: SACK collapsing could be used to remove this condition */
+    /* 如果该skb包含paged data，也不能参与合并 */
 	if (skb_shinfo(skb)->nr_frags != 0)
 		return false;
+    /* 如果只是cloned skb，由于是shared data,没有写权限，也是不能参与合并的 */
 	if (skb_cloned(skb))
 		return false;
+    /* 如果是发送队列的head，则也不能参与合并 */
 	if (skb == tcp_send_head(sk))
 		return false;
 	/* Some heurestics for collapsing over SACK'd could be invented */
+    /* 如果这个skb已经被ACKED或SACKED，则不能参与合并 */
 	if (TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_ACKED)
 		return false;
 
@@ -2474,6 +2485,8 @@ static bool tcp_can_collapse(const struct sock *sk, const struct sk_buff *skb)
 /* Collapse packets in the retransmit queue to make to create
  * less packets on the wire. This is only done on retransmission.
  */
+/* 重传时，如果skb小于cur_mss，则尝试合并 */
+/* 最大就合并一个space大小的skb出来，即cur_mss */
 static void tcp_retrans_try_collapse(struct sock *sk, struct sk_buff *to,
 				     int space)
 {
@@ -2481,15 +2494,20 @@ static void tcp_retrans_try_collapse(struct sock *sk, struct sk_buff *to,
 	struct sk_buff *skb = to, *tmp;
 	bool first = true;
 
+    /* 默认开启尝试重传合并 */
 	if (!sysctl_tcp_retrans_collapse)
 		return;
+    /* 带SYN标记的包不合并 */
 	if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_SYN)
 		return;
 
+    /* 从to开始遍历, 包括to，因为也要检查to是否符合合并条件 */
 	tcp_for_write_queue_from_safe(skb, tmp, sk) {
+        /* 如果skb不能参与合并，则放弃继续合并 */
 		if (!tcp_can_collapse(sk, skb))
 			break;
 
+        /* 如果当前skb能参与合并，则将其考虑其中 */
 		space -= skb->len;
 
 		if (first) {
@@ -2497,17 +2515,21 @@ static void tcp_retrans_try_collapse(struct sock *sk, struct sk_buff *to,
 			continue;
 		}
 
+        /* 如果space用完了，即长度超过cur_mss了，则停止合并 */
 		if (space < 0)
 			break;
 		/* Punt if not enough space exists in the first SKB for
 		 * the data in the second
 		 */
+        /* 如果to中没有足够的空间，则放弃合并 */
 		if (skb->len > skb_availroom(to))
 			break;
 
+        /* 如果skb的尾序号超出接收窗口限制，则也不能合并 */
 		if (after(TCP_SKB_CB(skb)->end_seq, tcp_wnd_end(tp)))
 			break;
 
+        /* 至此，就可以将skb合并入to中了 */
 		tcp_collapse_retrans(sk, to);
 	}
 }
@@ -2558,6 +2580,7 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 	    TCP_SKB_CB(skb)->seq != tp->snd_una)
 		return -EAGAIN;
 
+    /* 如果skb超过最新的mss(可能变小), 那么重传时就需要分片 */
 	if (skb->len > cur_mss) {
 		if (tcp_fragment(sk, skb, cur_mss, cur_mss))
 			return -ENOMEM; /* We'll try again later. */
@@ -2570,6 +2593,8 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 		}
 	}
 
+    /* 当skb长度小于cur_mss时，尝试合并skb, 减少重传数据包数量 */
+    /* TODO: 为什么该函数的调用出没有判断条件？？？ 任何情况都进入是不是太糙了  */
 	tcp_retrans_try_collapse(sk, skb, cur_mss);
 
 	/* Some Solaris stacks overoptimize and ignore the FIN on a

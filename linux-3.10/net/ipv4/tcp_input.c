@@ -1922,8 +1922,11 @@ void tcp_enter_loss(struct sock *sk, int how)
 
 	/* Reduce ssthresh if it has not yet been made inside this window. */
     /* 1. 如果是open或disorder状态，那么ssthresh还没有被设置过
-     * 2. 如果high_seq不比snd_una大，那么说明也没有被设置好，  -- high_seq是开始拥塞时记录的snd_nxt值
-     * 3. 虽然已经设置了Loss状态，但还有正式开始重传 */
+     * 2. 如果high_seq不比snd_una大，那么说明也没有被设置好，  -- high_seq是一个拥塞阶段开始时记录的snd_nxt值
+     *      It means that in whatever state we are, all the data from the window that got us into the state,
+     *      prior to retransmission timer expiry, has been acknowledged.
+     * 3. 虽然已经设置了Loss状态，但还没能成功重传数据。
+     *      The condition may arise in case we are not able to retransmit anything because of local congestion */
 	if (icsk->icsk_ca_state <= TCP_CA_Disorder ||
 	    !after(tp->high_seq, tp->snd_una) ||
 	    (icsk->icsk_ca_state == TCP_CA_Loss && !icsk->icsk_retransmits)) {
@@ -1950,7 +1953,7 @@ void tcp_enter_loss(struct sock *sk, int how)
 	if (tcp_is_reno(tp))
 		tcp_reset_reno_sack(tp);
 
-    /* TODO: undo_marker是个什么鬼?
+    /* TODO-DONE: undo_marker是个什么鬼?
      * 记录重传开始的地方 */
 	tp->undo_marker = tp->snd_una;
 
@@ -1959,7 +1962,7 @@ void tcp_enter_loss(struct sock *sk, int how)
 		tp->sacked_out = 0;
 		tp->fackets_out = 0;
 	}
-    /* TODO-DOEN: retrans_hints是什么鬼？ */
+    /* TODO-DONE: retrans_hints是什么鬼？ */
     /* 标记在重传队列中，将要被重传的第一个SKB */
     /* RTO超时后，这个标记会被清除 */
 	tcp_clear_all_retrans_hints(tp);
@@ -1972,6 +1975,13 @@ void tcp_enter_loss(struct sock *sk, int how)
         /* 如果重传队列里面已经有一个数据包重传过，但还是进入了Loss状态，
          * 说明这次进入Loss可能是先进入了Recovery阶段在进入的了， 
          * 实现者认为这种由Open -> Recovery -> Loss的流程非常严重，不应该undo了，故选择将undo_marker清除 */
+        /* 更准确的解释：由于之前已经重传过，那么当收到ACK时没办法确实是对于之前重传的确认，还是这次RTO之后的重传，
+         * 因此此时不能undo.
+         * ADI 解释：
+         *      The reason being that we will never know if the ACK for packets appears from the retransmission
+         *      or the original transmission. In the case where we get an ACK for retransmitted segment that is
+         *      misinterpreted as an ACK for original segment and we undo from the loss state, this will be misleading.
+         */
 		if (TCP_SKB_CB(skb)->sacked & TCPCB_RETRANS)
 			tp->undo_marker = 0;
 
@@ -1985,7 +1995,7 @@ void tcp_enter_loss(struct sock *sk, int how)
 		if (!(TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_ACKED)     /* 该SKB没有SACK信息 */
             || how) {                                           /* 或者需要忽略SACK信息 */
 			TCP_SKB_CB(skb)->sacked &= ~TCPCB_SACKED_ACKED;     /* 清除ACK标记 */
-			TCP_SKB_CB(skb)->sacked |= TCPCB_LOST;              /* 标记loss标记 */
+			TCP_SKB_CB(skb)->sacked |= TCPCB_LOST;              /* 标记lost标记 */
 			tp->lost_out += tcp_skb_pcount(skb);                /* 既然把之前被SACK的包认为也丢弃了，则更新计数器 */
             /* TODO-DONE： retransmit_high的内在含义是？
              * 记录被标记为TCPCB_LOST标记的最大的序号 */
@@ -1995,13 +2005,14 @@ void tcp_enter_loss(struct sock *sk, int how)
     /* 验证left_out (= sacked_out + lost_out) 不超过packets_out (= snd_nxt - snd_una) */
 	tcp_verify_left_out(tp);
 
-    /* 更新reordering值, TODO： 目前认为这属于防止reordering被sysctl方式改小?
+    /* 更新reordering值
      * reordering值在非loss阶段，可能被调大(比如通过DSACK信息), 
      * 但一旦进入Loss状态，则不相信之前的信息了，重新设置回系统默认值 */
 	tp->reordering = min_t(unsigned int, tp->reordering,
 			       sysctl_tcp_reordering);
 	tcp_set_ca_state(sk, TCP_CA_Loss);
 	tp->high_seq = tp->snd_nxt;     /* 设置进入Loss阶段的snd_nxt值 */
+    /* 下一个发送的数据包的TCP头部会设置CWR bit, 通知对端cwnd已经被减小了。 */
 	TCP_ECN_queue_cwr(tp);
 
 	/* F-RTO RFC5682 sec 3.1 step 1: retransmit SND.UNA if no previous

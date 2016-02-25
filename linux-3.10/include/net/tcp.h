@@ -143,6 +143,7 @@ extern void tcp_time_wait(struct sock *sk, int state, int timeo);
 						 * most likely due to retrans in 3WHS.
 						 */
 
+/* 当由于local resource限制发送失败时，需要设置更短的probe间隔，默认为500ms */
 #define TCP_RESOURCE_PROBE_INTERVAL ((unsigned)(HZ/2U)) /* Maximal interval between probes
 					                 * for local resources.
 					                 */
@@ -1498,6 +1499,7 @@ static inline void tcp_insert_write_queue_before(struct sk_buff *new,
 		sk->sk_send_head = new;
 }
 
+/* 将skb从tcp write queue中移除 */
 static inline void tcp_unlink_write_queue(struct sk_buff *skb, struct sock *sk)
 {
 	__skb_unlink(skb, &sk->sk_write_queue);
@@ -1549,6 +1551,15 @@ static inline void tcp_highest_sack_reset(struct sock *sk)
 }
 
 /* Called when old skb is about to be deleted (to be combined with new skb) */
+/* 如果old是highest_sack，那么要更新这个指针
+ * 注：在old = new->next的情况下(重传时合并满足该条件)，old是highest_sack意味着new其实之前应该被sack了，
+ * 那new就不应该被重传才对。
+ * 但该函数目前就仅在tcp_collapse_retrans()中调用，所以说明下面两各条件存在同时发生的可能：
+ * a. 该函数在重传合并时调用
+ * b. old确实是highest_sack
+ *
+ * TODO: 确认什么情况会导致两各条件同时成立 ？ 难道是sacked信息被清空的时候，highest_sack指针没有被重置？
+ */
 static inline void tcp_highest_sack_combine(struct sock *sk,
 					    struct sk_buff *old,
 					    struct sk_buff *new)

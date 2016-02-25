@@ -29,6 +29,11 @@ int sysctl_tcp_keepalive_probes __read_mostly = TCP_KEEPALIVE_PROBES;
 int sysctl_tcp_keepalive_intvl __read_mostly = TCP_KEEPALIVE_INTVL;
 int sysctl_tcp_retries1 __read_mostly = TCP_RETR1;      /* rto重传次数达到该值，则更新路由 */
 int sysctl_tcp_retries2 __read_mostly = TCP_RETR2;      /* rto重传次数达到该值，则放弃重传，关闭连接 */
+/* 对于orphan socket (that is detached from the process context but exists to do some cleanup work),
+ * 有专门的orphan_retries进一步限制。
+ * 同时对于orphan socket，在以下两种情况下也会被kill掉
+ *  a. orphan socket的总数超过系统上线：sysctl_tcp_max_orphans
+ *  b. 存在memory pressure时, 即tcp_memory_allocated > sysctl_tcp_mem[2] */
 int sysctl_tcp_orphan_retries __read_mostly;
 int sysctl_tcp_thin_linear_timeouts __read_mostly;
 
@@ -505,6 +510,7 @@ void tcp_retransmit_timer(struct sock *sk)
 		 */
 		if (!icsk->icsk_retransmits)
 			icsk->icsk_retransmits = 1;
+        /* 当由于local resource限制发送失败时，需要设置更短的probe间隔，默认为500ms */
 		inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS,
 					  min(icsk->icsk_rto, TCP_RESOURCE_PROBE_INTERVAL),
 					  TCP_RTO_MAX);
