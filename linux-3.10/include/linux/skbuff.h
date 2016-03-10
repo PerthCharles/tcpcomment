@@ -297,6 +297,8 @@ struct skb_shared_info {
  * Holding a reference to the payload part means that the user does not
  * care about modifications to the header part of skb->data.
  */
+/* dataref高16位记录payload part of skb->data;
+ * 低16位记录整个skb->data部分 */
 #define SKB_DATAREF_SHIFT 16
 #define SKB_DATAREF_MASK ((1 << SKB_DATAREF_SHIFT) - 1)
 
@@ -871,9 +873,19 @@ static inline struct sk_buff *skb_get(struct sk_buff *skb)
  *	one of multiple shared copies of the buffer. Cloned buffers are
  *	shared data so must not be written to under normal circumstances.
  */
+/* 当需要发送一个segment时，使用skb_clone()克隆一份出来进行发送。
+ * 克隆具体干了什么？
+ *  a. 完全的拷贝sk_buff header部分内容
+ *  b. 共享data部分.
+ * The paged data are not copied, only the header part of the paged data is copied.
+ * We increment skb_skbinfo(skb)->dataref by 1 when we are cloning sk_buff */
 static inline int skb_cloned(const struct sk_buff *skb)
 {
+    /* 当segment被发送后，skb->cloned就会设置 */
 	return skb->cloned &&
+            /* dataref会在skb_release_data()时递减1。
+             * So, sk_buff is considered cloned if the transmitted data are actually transmitted and are not
+             * queued up in the transmit queue or IP queue for transmission */
 	       (atomic_read(&skb_shinfo(skb)->dataref) & SKB_DATAREF_MASK) != 1;
 }
 

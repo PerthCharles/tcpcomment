@@ -441,6 +441,8 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 
 		newtp->urg_data = 0;
 
+        /* 如果socket设置了SOCK_KEEPOPEN标记，则启用keepalive timer
+         * 对应到应用层的socket option就是： SO_KEEPALIVE */
 		if (sock_flag(newsk, SOCK_KEEPOPEN))
 			inet_csk_reset_keepalive_timer(newsk,
 						       keepalive_time_when(newtp));

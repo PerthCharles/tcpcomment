@@ -102,7 +102,7 @@ struct inet_connection_sock {
 	__u8			  icsk_pending;
 	__u8			  icsk_backoff;
 	__u8			  icsk_syn_retries;
-	__u8			  icsk_probes_out;
+	__u8			  icsk_probes_out;      /* 记录zero window probe timer的探测次数 */
 	__u16			  icsk_ext_hdr_len;
 	struct {
 		__u8		  pending;	 /* ACK is pending			   */

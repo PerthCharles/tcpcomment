@@ -2360,7 +2360,7 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 	sk->sk_state_change	=	sock_def_wakeup;
 	sk->sk_data_ready	=	sock_def_readable;    /* 唯一像是初始化sk->sk_data_ready的地方 */
 	sk->sk_write_space	=	sock_def_write_space;
-	sk->sk_error_report	=	sock_def_error_report;
+	sk->sk_error_report	=	sock_def_error_report;  /* 在socket发送错误而需要关闭时(如超时次数超过上限)，该函数负责告知上层发送错误 */
 	sk->sk_destruct		=	sock_def_destruct;
 
 	sk->sk_frag.page	=	NULL;

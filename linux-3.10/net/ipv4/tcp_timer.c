@@ -329,12 +329,14 @@ static void tcp_delack_timer(unsigned long data)
 	sock_put(sk);
 }
 
+/* Zero window probe timer的核心处理流程 */
 static void tcp_probe_timer(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 	int max_probes;
 
+    /* 如果有未被确认的数据、或者没有数据需要发送，则取消probe timer */
 	if (tp->packets_out || !tcp_send_head(sk)) {
 		icsk->icsk_probes_out = 0;
 		return;
@@ -355,8 +357,9 @@ static void tcp_probe_timer(struct sock *sk)
 	 * with RFCs, only probe timer combines both retransmission timeout
 	 * and probe timeout in one bottle.				--ANK
 	 */
-	max_probes = sysctl_tcp_retries2;
+	max_probes = sysctl_tcp_retries2;   /* Zero window probe timer尝试的最大次数是retries2, 默认为15 */
 
+    /* 如果socket已经变成一个orphan socket，则进一步缩短尝试次数。这个地方的逻辑与tcp_write_timeout()中类似 */
 	if (sock_flag(sk, SOCK_DEAD)) {
 		const int alive = ((icsk->icsk_rto << icsk->icsk_backoff) < TCP_RTO_MAX);
 
@@ -366,10 +369,13 @@ static void tcp_probe_timer(struct sock *sk)
 			return;
 	}
 
+    /* 当probe次数超过限制后，调用tcp_write_err(sk)关闭socket */
+    /* zero window probe失败会增加abortontimeout计数器次数 */
 	if (icsk->icsk_probes_out > max_probes) {
 		tcp_write_err(sk);
 	} else {
 		/* Only send another probe if we didn't close things up. */
+        /* 发送一个zero window probe包 */
 		tcp_send_probe0(sk);
 	}
 }
@@ -596,6 +602,7 @@ void tcp_write_timer_handler(struct sock *sk)
 		tcp_retransmit_timer(sk);
 		break;
 	case ICSK_TIME_PROBE0:
+        /* 零窗口探测timer */
 		icsk->icsk_pending = 0;
 		tcp_probe_timer(sk);
 		break;
@@ -605,6 +612,11 @@ out:
 	sk_mem_reclaim(sk);
 }
 
+/* 重传定时器, 但是它被复用为以下具体timer
+ * Early_retrans timer: 在没有足够dupack触发fast retransmit时，启用该timer
+ * Loss Probe timer: 发送一个TLP包，处理尾丢包的情况
+ * Retrans timer: 正宗的RTO超时timer
+ * Probe0 timer:  zero window probe timer */
 static void tcp_write_timer(unsigned long data)
 {
 	struct sock *sk = (struct sock *)data;
@@ -650,6 +662,11 @@ void tcp_set_keepalive(struct sock *sk, int val)
 }
 
 
+/* keepalive timer功能：
+ *     keepalive timer is used by TCP to probe the peer when there is no activity over the connection for
+ *     a long time. This timer is used by interactive TCP connections where the connection may be in an idle
+ *     state for a long time. For example, telnet, rlogin, and so on.
+ */
 static void tcp_keepalive_timer (unsigned long data)
 {
 	struct sock *sk = (struct sock *) data;
@@ -661,6 +678,7 @@ static void tcp_keepalive_timer (unsigned long data)
 	bh_lock_sock(sk);
 	if (sock_owned_by_user(sk)) {
 		/* Try again later. */
+        /* 50ms后再次尝试 */
 		inet_csk_reset_keepalive_timer (sk, HZ/20);
 		goto out;
 	}
@@ -671,6 +689,7 @@ static void tcp_keepalive_timer (unsigned long data)
 		goto out;
 	}
 
+    /* FIN_WAIT2 timer也是复用keepalive timer */
 	if (sk->sk_state == TCP_FIN_WAIT2 && sock_flag(sk, SOCK_DEAD)) {
 		if (tp->linger2 >= 0) {
 			const int tmo = tcp_fin_time(sk) - TCP_TIMEWAIT_LEN;
@@ -699,11 +718,13 @@ static void tcp_keepalive_timer (unsigned long data)
 		/* If the TCP_USER_TIMEOUT option is enabled, use that
 		 * to determine when to timeout instead.
 		 */
+        /* 应用层可以指定超时时间 */
 		if ((icsk->icsk_user_timeout != 0 &&
 		    elapsed >= icsk->icsk_user_timeout &&
 		    icsk->icsk_probes_out > 0) ||
 		    (icsk->icsk_user_timeout == 0 &&
 		    icsk->icsk_probes_out >= keepalive_probes(tp))) {
+            /* 通过keepalive timer超时要关闭的流，会主动发送一个reset包 */
 			tcp_send_active_reset(sk, GFP_ATOMIC);
 			tcp_write_err(sk);
 			goto out;

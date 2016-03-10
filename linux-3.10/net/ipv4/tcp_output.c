@@ -2272,6 +2272,7 @@ void __tcp_push_pending_frames(struct sock *sk, unsigned int cur_mss,
      * 3. sndbuf中的数据包不能发送
      *
      * 场景： 对端的接收窗口用完了 zero window */
+    /* 有数据想发，而未能成功发送时，启动zero window probe timer */
 	if (tcp_write_xmit(sk, cur_mss, nonagle, 0,
 			   sk_gfp_atomic(sk, GFP_ATOMIC)))
 		tcp_check_probe_timer(sk);
@@ -2469,6 +2470,8 @@ static bool tcp_can_collapse(const struct sock *sk, const struct sk_buff *skb)
 	if (skb_shinfo(skb)->nr_frags != 0)
 		return false;
     /* 如果只是cloned skb，由于是shared data,没有写权限，也是不能参与合并的 */
+    /* ADI中的解释：the original transmission should not be there in the IP or device queue pending for transmission 
+     * TODO：确认一下ADI解释是否正确。 */
 	if (skb_cloned(skb))
 		return false;
     /* 如果是发送队列的head，则也不能参与合并 */
@@ -2522,6 +2525,8 @@ static void tcp_retrans_try_collapse(struct sock *sk, struct sk_buff *to,
 		 * the data in the second
 		 */
         /* 如果to中没有足够的空间，则放弃合并 */
+        /* 原则：we are not going to add any data to the paged area nor are we going to reallocate memory
+         * in the linear area to accommodate new data(expensive operation) */
 		if (skb->len > skb_availroom(to))
 			break;
 
@@ -3401,6 +3406,7 @@ void tcp_send_ack(struct sock *sk)
  * one is with SEG.SEQ=SND.UNA to deliver urgent pointer, another is
  * out-of-date with SND.UNA-1 to probe window.
  */
+/* 发送一个字节的数据包进行zero window probe */
 static int tcp_xmit_probe_skb(struct sock *sk, int urgent)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -3432,6 +3438,9 @@ void tcp_send_window_probe(struct sock *sk)
 }
 
 /* Initiate keepalive or window probe from timer. */
+/* keepalive和zero window probe会调用该函数
+ * 功能： checks if the receiver has advertised enough window to transmit new data
+ *        and transmits the new segment if permitted. */
 int tcp_write_wakeup(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -3440,6 +3449,7 @@ int tcp_write_wakeup(struct sock *sk)
 	if (sk->sk_state == TCP_CLOSE)
 		return -1;
 
+    /* 如果有数据等待发送，并且对端的接收窗口允许发送哪怕一个字节的数据 */
 	if ((skb = tcp_send_head(sk)) != NULL &&
 	    before(TCP_SKB_CB(skb)->seq, tcp_wnd_end(tp))) {
 		int err;
@@ -3453,6 +3463,7 @@ int tcp_write_wakeup(struct sock *sk)
 		 * but the window size is != 0
 		 * must have been a result SWS avoidance ( sender )
 		 */
+        /* 如果接收窗口不够一个SKB中的数据，则需要TCP层进行分片 */
 		if (seg_size < TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq ||
 		    skb->len > mss) {
 			seg_size = min(seg_size, mss);
@@ -3469,8 +3480,10 @@ int tcp_write_wakeup(struct sock *sk)
 			tcp_event_new_data_sent(sk, skb);
 		return err;
 	} else {
+        /* TODO: 这个判断条件为什么是urgent mode判断方法？ */
 		if (between(tp->snd_up, tp->snd_una + 1, tp->snd_una + 0xFFFF))
 			tcp_xmit_probe_skb(sk, 1);
+        /* 如果接收窗口为0， 则发送一个字节的新数据进行zero window probe */
 		return tcp_xmit_probe_skb(sk, 0);
 	}
 }

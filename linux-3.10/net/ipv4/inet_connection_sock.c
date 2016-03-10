@@ -712,6 +712,7 @@ void inet_csk_reqsk_queue_prune(struct sock *parent,
     /* 如果syn queue已经使用了超过一半的限额, 则根据young的数量来降低重传syn/ack的阈值
      * 规则：young req的数量越少，thresh就越小。 从而老的req能够更快的被踢出去  */
     /* 极端例子：如果一个young req都没有，那么thresh将会降至2 */
+    /* young表示这个req还没有重传过syn/ack */
 	if (lopt->qlen>>(lopt->max_qlen_log-1)) {
 		int young = (lopt->qlen_young<<1);
 
@@ -733,7 +734,7 @@ void inet_csk_reqsk_queue_prune(struct sock *parent,
      * 这个函数每隔interval执行一次，每次扫描（timeout/interval）%，则能保证在timeout时间内肯定能被扫描到 
      * TODO: 这个地方为什么不根据timeout的先后顺序来优化这块？ */
 	budget = 2 * (lopt->nr_table_entries / (timeout / interval));
-	i = lopt->clock_hand;
+	i = lopt->clock_hand;   /* 每次只遍历一部分req, i记录上一次遍历的位置 */
 
 	do {
         /* 获取第i条hash冲突链 */

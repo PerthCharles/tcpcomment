@@ -252,7 +252,7 @@ extern int sysctl_tcp_timestamps;
 extern int sysctl_tcp_window_scaling;
 extern int sysctl_tcp_sack;
 extern int sysctl_tcp_fin_timeout;
-extern int sysctl_tcp_keepalive_time;
+extern int sysctl_tcp_keepalive_time;       /* How often TCP sends out keepalive messages when keepalive is enabled */
 extern int sysctl_tcp_keepalive_probes;
 extern int sysctl_tcp_keepalive_intvl;
 extern int sysctl_tcp_syn_retries;
@@ -1012,13 +1012,14 @@ static inline void tcp_minshall_update(struct tcp_sock *tp, unsigned int mss,
 		tp->snd_sml = TCP_SKB_CB(skb)->end_seq;
 }
 
+/* 如果网络中没有inflight数据包，并且没有其他timer等待安装，则安装Zero Window Probe Timer */
 static inline void tcp_check_probe_timer(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 
-    /* 如果网络中没有inflight数据包，并且没有其他timer等待安装，则安装Zero Window Probe Timer */
 	if (!tp->packets_out && !icsk->icsk_pending)
+        /* 注意这里用的RTO时间，是通过RTT算出来的时间，不是固定的 */
 		inet_csk_reset_xmit_timer(sk, ICSK_TIME_PROBE0,
 					  icsk->icsk_rto, TCP_RTO_MAX);
 }
@@ -1154,6 +1155,7 @@ static inline void tcp_synack_rtt_meas(struct sock *sk,
 
 extern void tcp_enter_memory_pressure(struct sock *sk);
 
+/* keepalive机制触发后，会尝试发送keepalive_probes个探测包, 这些探测包的间隔就是keepalive_intvl */
 static inline int keepalive_intvl_when(const struct tcp_sock *tp)
 {
 	return tp->keepalive_intvl ? : sysctl_tcp_keepalive_intvl;
@@ -1164,11 +1166,13 @@ static inline int keepalive_time_when(const struct tcp_sock *tp)
 	return tp->keepalive_time ? : sysctl_tcp_keepalive_time;
 }
 
+/* keepalive包的尝试次数 */
 static inline int keepalive_probes(const struct tcp_sock *tp)
 {
 	return tp->keepalive_probes ? : sysctl_tcp_keepalive_probes;
 }
 
+/* 计算距离上一次收到对方响应经过的时间 */
 static inline u32 keepalive_time_elapsed(const struct tcp_sock *tp)
 {
 	const struct inet_connection_sock *icsk = &tp->inet_conn;
