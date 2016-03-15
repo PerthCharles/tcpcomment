@@ -67,7 +67,7 @@ struct inet_timewait_death_row {
 	/* Short-time timewait calendar */
 	int			twcal_hand;
 	unsigned long		twcal_jiffie;
-	struct timer_list	twcal_timer;
+	struct timer_list	twcal_timer;    /* 短超时的timer */
 	struct hlist_head	twcal_row[INET_TWDR_RECYCLE_SLOTS];
 
 	spinlock_t		death_lock;
@@ -75,7 +75,7 @@ struct inet_timewait_death_row {
 	int			period;
 	u32			thread_slots;
 	struct work_struct	twkill_work;
-	struct timer_list	tw_timer;
+	struct timer_list	tw_timer;       /* 长超时的timer */
 	int			slot;
 	struct hlist_head	cells[INET_TWDR_TWKILL_SLOTS];
 	struct inet_hashinfo 	*hashinfo;

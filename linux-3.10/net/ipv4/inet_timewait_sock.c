@@ -216,6 +216,7 @@ struct inet_timewait_sock *inet_twsk_alloc(const struct sock *sk, const int stat
 EXPORT_SYMBOL_GPL(inet_twsk_alloc);
 
 /* Returns non-zero if quota exceeded.  */
+/* 负责清理一个twdr->tw_timer的slot */
 static int inet_twdr_do_twkill_work(struct inet_timewait_death_row *twdr,
 				    const int slot)
 {
@@ -263,6 +264,7 @@ rescan:
 	return ret;
 }
 
+/* twdr->tw_timer的处理函数 */
 void inet_twdr_hangman(unsigned long data)
 {
 	struct inet_timewait_death_row *twdr;
@@ -277,6 +279,7 @@ void inet_twdr_hangman(unsigned long data)
 	need_timer = 0;
 	if (inet_twdr_do_twkill_work(twdr, twdr->slot)) {
 		twdr->thread_slots |= (1 << twdr->slot);
+        /* 对应的处理函数: inet_twdr_twkill_work() */
 		schedule_work(&twdr->twkill_work);
 		need_timer = 1;
 	} else {
@@ -342,6 +345,12 @@ void inet_twsk_deschedule(struct inet_timewait_sock *tw,
 EXPORT_SYMBOL(inet_twsk_deschedule);
 
 /* 启动tw socket的超时timer */
+/* 总结一下两个timer: twdr->tw_timer和twdr->twcal_timer
+ *  tw_timer超时间隔为twdr->period, 走完一圈是60s 
+ *  twcal_timer超时间隔为2^TICK=128ms，走完一圈是32 * 128ms = 4096ms
+ * 设置这样的一段时间超时的timer的目的，是为了提高效率.
+ * 一次性处理多个tw socket. 避免每个tw socket都一个timer
+ * syn/ack timer也存在类似的设计思想 */
 void inet_twsk_schedule(struct inet_timewait_sock *tw,
 		       struct inet_timewait_death_row *twdr,
 		       const int timeo, const int timewait_len)
@@ -396,35 +405,42 @@ void inet_twsk_schedule(struct inet_timewait_sock *tw,
     /* 如果是默认的60s的话，肯定走slot >= INET_TWDR_RECYCLE_SLOTS分支 */
 	if (slot >= INET_TWDR_RECYCLE_SLOTS) {
 		/* Schedule to slow timer */
+        /* TODO-DONE: 英文注释中何为slow timer ? 
+         * twdr->cells[]中存放超时时间更长的tw socket, 也就是TWKILL_SLOTS对应的是slow timer */
         /* 如果timeo >= 60s, 则放入最后一个KILL slot */
-        /* TODO: 英文注释中何为slow timer ? */
 		if (timeo >= timewait_len) {
             /* INET_TWDR_TWKILL_SLOTS == 8 */
 			slot = INET_TWDR_TWKILL_SLOTS - 1;
 		} else {
+        /* 否则根据twdr->period计算出一个kill slot. 
+         * 每隔twdr->period时间，会超时一个slot。从而删除对应slot中的tw socket */
 			slot = DIV_ROUND_UP(timeo, twdr->period);
 			if (slot >= INET_TWDR_TWKILL_SLOTS)
 				slot = INET_TWDR_TWKILL_SLOTS - 1;
 		}
-		tw->tw_ttd = jiffies + timeo;   /* TODO: ttd == time to die ? */
+		tw->tw_ttd = jiffies + timeo;   /* ttd == time to die */
 		slot = (twdr->slot + slot) & (INET_TWDR_TWKILL_SLOTS - 1);
 		list = &twdr->cells[slot];
 	} else {
 		tw->tw_ttd = jiffies + (slot << INET_TWDR_RECYCLE_TICK);
 
+        /* 如果是第一个tw socket, 则记录当前时刻并启动twcal_timer */
 		if (twdr->twcal_hand < 0) {
 			twdr->twcal_hand = 0;
 			twdr->twcal_jiffie = jiffies;
 			twdr->twcal_timer.expires = twdr->twcal_jiffie +
 					      (slot << INET_TWDR_RECYCLE_TICK);
+            /* 启动超时时长短的timer */
 			add_timer(&twdr->twcal_timer);
 		} else {
+            /* 如果当前tw socket的超时时间更短，则重设超时时间 */
 			if (time_after(twdr->twcal_timer.expires,
 				       jiffies + (slot << INET_TWDR_RECYCLE_TICK)))
 				mod_timer(&twdr->twcal_timer,
 					  jiffies + (slot << INET_TWDR_RECYCLE_TICK));
 			slot = (twdr->twcal_hand + slot) & (INET_TWDR_RECYCLE_SLOTS - 1);
 		}
+        /* twdr->twcal_row[]中存放超时时间较短的tw socket  */
 		list = &twdr->twcal_row[slot];
 	}
 
