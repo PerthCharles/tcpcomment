@@ -354,11 +354,12 @@ static inline struct tcp_sock *tcp_sk(const struct sock *sk)
 	return (struct tcp_sock *)sk;
 }
 
+/* 对于TIME_WAIT的socket，还需保留以下信息 */
 struct tcp_timewait_sock {
 	struct inet_timewait_sock tw_sk;
-	u32			  tw_rcv_nxt;
-	u32			  tw_snd_nxt;
-	u32			  tw_rcv_wnd;
+	u32			  tw_rcv_nxt;   /* 下一个期望收到的序号 */
+	u32			  tw_snd_nxt;   /* 下一个要发送的数据序号 */
+	u32			  tw_rcv_wnd;   /* 对端的接收窗口大小 */
 	u32			  tw_ts_offset;
 	u32			  tw_ts_recent;
 	long			  tw_ts_recent_stamp;

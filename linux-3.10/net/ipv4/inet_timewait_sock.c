@@ -123,6 +123,7 @@ EXPORT_SYMBOL_GPL(inet_twsk_put);
  * Essentially we whip up a timewait bucket, copy the relevant info into it
  * from the SK, and mess with hash chains and list linkage.
  */
+/* 将tw socket放到bind-hash list中，并将原始socket从established list中移除 */
 void __inet_twsk_hashdance(struct inet_timewait_sock *tw, struct sock *sk,
 			   struct inet_hashinfo *hashinfo)
 {
@@ -150,6 +151,7 @@ void __inet_twsk_hashdance(struct inet_timewait_sock *tw, struct sock *sk,
 	 * Should be done before removing sk from established chain
 	 * because readers are lockless and search established first.
 	 */
+    /* "readers search established first"保证了即使有两个socket同时存在也不会出问题 */
 	inet_twsk_add_node_rcu(tw, &ehead->twchain);
 
 	/* Step 3: Remove SK from established hash. */
@@ -170,6 +172,7 @@ void __inet_twsk_hashdance(struct inet_timewait_sock *tw, struct sock *sk,
 }
 EXPORT_SYMBOL_GPL(__inet_twsk_hashdance);
 
+/* 分配一个inet_timewait_sock结构体，参数state设定substate */
 struct inet_timewait_sock *inet_twsk_alloc(const struct sock *sk, const int state)
 {
 	struct inet_timewait_sock *tw =
@@ -181,22 +184,23 @@ struct inet_timewait_sock *inet_twsk_alloc(const struct sock *sk, const int stat
 		kmemcheck_annotate_bitfield(tw, flags);
 
 		/* Give us an identity. */
-		tw->tw_daddr	    = inet->inet_daddr;
-		tw->tw_rcv_saddr    = inet->inet_rcv_saddr;
-		tw->tw_bound_dev_if = sk->sk_bound_dev_if;
+        /* timewait socket主要保留一下信息 */
+		tw->tw_daddr	    = inet->inet_daddr;         /* 对端IP地址 */
+		tw->tw_rcv_saddr    = inet->inet_rcv_saddr;     /* 本地IP地址 */
+		tw->tw_bound_dev_if = sk->sk_bound_dev_if;      /* 绑定的网卡设备编号 */
 		tw->tw_tos	    = inet->tos;
-		tw->tw_num	    = inet->inet_num;
-		tw->tw_state	    = TCP_TIME_WAIT;
-		tw->tw_substate	    = state;
-		tw->tw_sport	    = inet->inet_sport;
-		tw->tw_dport	    = inet->inet_dport;
-		tw->tw_family	    = sk->sk_family;
-		tw->tw_reuse	    = sk->sk_reuse;
-		tw->tw_hash	    = sk->sk_hash;
+		tw->tw_num	    = inet->inet_num;               /* 本地端口 */
+		tw->tw_state	    = TCP_TIME_WAIT;            /* 默认状态TCP_TIME_WAIT */
+		tw->tw_substate	    = state;                    /* TODO: substate是什么用途 */
+		tw->tw_sport	    = inet->inet_sport;         /* 本地端口 ?  TODO: 区分inet_num与inet_sport */
+		tw->tw_dport	    = inet->inet_dport;         /* 目的端口 */
+		tw->tw_family	    = sk->sk_family;            /* socket类型 */
+		tw->tw_reuse	    = sk->sk_reuse;             /* 端口是否重用 */
+		tw->tw_hash	    = sk->sk_hash;                  /* hash值 */
 		tw->tw_ipv6only	    = 0;
 		tw->tw_transparent  = inet->transparent;
 		tw->tw_prot	    = sk->sk_prot_creator;
-		twsk_net_set(tw, hold_net(sock_net(sk)));
+		twsk_net_set(tw, hold_net(sock_net(sk)));       /* net namespace */
 		/*
 		 * Because we use RCU lookups, we should not set tw_refcnt
 		 * to a non null value before everything is setup for this
@@ -337,6 +341,7 @@ void inet_twsk_deschedule(struct inet_timewait_sock *tw,
 }
 EXPORT_SYMBOL(inet_twsk_deschedule);
 
+/* 启动tw socket的超时timer */
 void inet_twsk_schedule(struct inet_timewait_sock *tw,
 		       struct inet_timewait_death_row *twdr,
 		       const int timeo, const int timewait_len)
@@ -367,27 +372,41 @@ void inet_twsk_schedule(struct inet_timewait_sock *tw,
 	 * kill tw bucket after 3.5*RTO (it is important that this number
 	 * is greater than TS tick!) and detect old duplicates with help
 	 * of PAWS.
+	 *
+     * recycle与per-host的PAWS机制为什么在Linux是同时启用或禁用的？原因如上段解释
 	 */
+
+    /* INET_TWDR_RECYCLE_TICK在HZ=1000时，值为(10 + 2 - INET_TWDR_RECYCLE_TICK_LOG(==5)) == 7 */
+    /* 可见TWDR recycle间隔为2^7ms, 即128ms。下面根据timeo值，计算当前tw socket应该放入哪一个slot中 */
 	slot = (timeo + (1 << INET_TWDR_RECYCLE_TICK) - 1) >> INET_TWDR_RECYCLE_TICK;
 
 	spin_lock(&twdr->death_lock);
 
 	/* Unlink it, if it was scheduled */
+    /* 如果之前已经加入过tw dead row，则将当前tw socket从中删除 */
+    /* TODO：什么时候会发送之前已经加入过，然后又再次调度它的？
+     * 目前发现tcp_timewait_state_process()会reschedule，但具体原因跟逻辑还不清楚 */
 	if (inet_twsk_del_dead_node(tw))
 		twdr->tw_count--;
 	else
+        /* 新调度该tw，则增加引用计数 */
 		atomic_inc(&tw->tw_refcnt);
 
+    /* INET_TWDR_RECYCLE_SLOTS = (1 << INET_TWDR_RECYCLE_TICK_LOG) = 32 */
+    /* 如果是默认的60s的话，肯定走slot >= INET_TWDR_RECYCLE_SLOTS分支 */
 	if (slot >= INET_TWDR_RECYCLE_SLOTS) {
 		/* Schedule to slow timer */
+        /* 如果timeo >= 60s, 则放入最后一个KILL slot */
+        /* TODO: 英文注释中何为slow timer ? */
 		if (timeo >= timewait_len) {
+            /* INET_TWDR_TWKILL_SLOTS == 8 */
 			slot = INET_TWDR_TWKILL_SLOTS - 1;
 		} else {
 			slot = DIV_ROUND_UP(timeo, twdr->period);
 			if (slot >= INET_TWDR_TWKILL_SLOTS)
 				slot = INET_TWDR_TWKILL_SLOTS - 1;
 		}
-		tw->tw_ttd = jiffies + timeo;
+		tw->tw_ttd = jiffies + timeo;   /* TODO: ttd == time to die ? */
 		slot = (twdr->slot + slot) & (INET_TWDR_TWKILL_SLOTS - 1);
 		list = &twdr->cells[slot];
 	} else {

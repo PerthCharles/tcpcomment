@@ -265,6 +265,7 @@ EXPORT_SYMBOL(tcp_timewait_state_process);
 /*
  * Move a socket to time-wait or dead fin-wait-2 state.
  */
+/* 将socket置为TIMEWAIT状态，并启动time wait timer */
 void tcp_time_wait(struct sock *sk, int state, int timeo)
 {
 	struct inet_timewait_sock *tw = NULL;
@@ -272,14 +273,29 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	bool recycle_ok = false;
 
+    /* Linux实现了两套处理TIME_WAIT socket超时的机制
+     * 1. 固定的时间间隔，默认60s
+     * 2. 基于connection'RTO计算出来的动态时间长度
+     *
+     * 一般情况下都是使用第一种固定时长的超时机制，只有在以下两个条件满足时，才会使用第二个机制
+     *     a. 开启了sysctl_tcp_tw_recycle选项
+     *     b. 记录了最近一次收到对端数据的时间 -- 需要开启tcp timestamp选项
+     */
+
+    /* 如果开启了tcp_tw_recycle, 并且ts_recent_stamp已设置(暗示着要开启tcp timestamp选项)
+     * 则记录最新的timestamp到对应的tcpmetric中。 目前认为tcp_remember_stamp()基本都是返回true */
 	if (tcp_death_row.sysctl_tw_recycle && tp->rx_opt.ts_recent_stamp)
 		recycle_ok = tcp_remember_stamp(sk);
 
+    /* 如果TIME_WAIT socket数量低于系统限制的最大数量，则分配一个inet_timewait_sock，用于等待TIME_WAIT超时
+     * 重新分配一个tw sock的目的是为了减少内存开销 */
 	if (tcp_death_row.tw_count < tcp_death_row.sysctl_max_tw_buckets)
 		tw = inet_twsk_alloc(sk, state);
 
+    /* 如果分配成功，则正常等待TIME_WAIT超时；如果没有分配成功，则直接关掉socket */
 	if (tw != NULL) {
 		struct tcp_timewait_sock *tcptw = tcp_twsk((struct sock *)tw);
+        /* 可以快速recycle的tw socket的超时时间是 3.5RTO */
 		const int rto = (icsk->icsk_rto << 2) - (icsk->icsk_rto >> 1);
 		struct inet_sock *inet = inet_sk(sk);
 
@@ -326,20 +342,25 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 #endif
 
 		/* Linkage updates. */
+        /* 将该tw socket加入hash管理，剔除ehash中的原始socket */
 		__inet_twsk_hashdance(tw, sk, &tcp_hashinfo);
 
 		/* Get the TIME_WAIT timeout firing. */
+        /* 无论如何，都要等3.5RTO才超时 */
 		if (timeo < rto)
 			timeo = rto;
 
+        /* 如果可以快速回收，则超时时间是3.5RTO */
 		if (recycle_ok) {
 			tw->tw_timeout = rto;
 		} else {
+            /* 否则就是默认的60s */
 			tw->tw_timeout = TCP_TIMEWAIT_LEN;
 			if (state == TCP_TIME_WAIT)
 				timeo = TCP_TIMEWAIT_LEN;
 		}
 
+        /* 启动tw socket的超时timer */
 		inet_twsk_schedule(tw, &tcp_death_row, timeo,
 				   TCP_TIMEWAIT_LEN);
 		inet_twsk_put(tw);
@@ -352,6 +373,7 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 	}
 
 	tcp_update_metrics(sk);
+    /* 关闭原始socket */
 	tcp_done(sk);
 }
 

@@ -317,6 +317,7 @@ static struct tcp_metrics_block *tcp_get_metrics(struct sock *sk,
  * only, when TCP finishes successfully i.e. when it enters TIME-WAIT
  * or goes from LAST-ACK to CLOSE.
  */
+/* TODO: 一定要尽快的看懂tcp metric这部分功能 */
 void tcp_update_metrics(struct sock *sk)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
@@ -591,6 +592,9 @@ EXPORT_SYMBOL_GPL(tcp_fetch_timewait_stamp);
  * segment detection in subsequent connections, before they enter
  * synchronized state.
  */
+/* 如果能够找到dst相关的tcp metric, 则返回true 赋值给recycle_ok, 表示使用RTO计算的时间作为TW超时时间
+ *
+ * 注意：从代码来看，tcp metric中存的timestamp是针对HOST的，而不是针对具体TCP流的 */
 bool tcp_remember_stamp(struct sock *sk)
 {
 	struct dst_entry *dst = __sk_dst_get(sk);
@@ -600,10 +604,13 @@ bool tcp_remember_stamp(struct sock *sk)
 		struct tcp_metrics_block *tm;
 
 		rcu_read_lock();
+        /* TODO：tcp metric需要好好看看 */
 		tm = tcp_get_metrics(sk, dst, true);
+        /* 如果能够找到dst相关的tcp metric, 则返回true 赋值给recycle_ok */
 		if (tm) {
 			struct tcp_sock *tp = tcp_sk(sk);
 
+            /* 更新tcp metric中记录的timestamp值 */
 			if ((s32)(tm->tcpm_ts - tp->rx_opt.ts_recent) <= 0 ||
 			    ((u32)get_seconds() - tm->tcpm_ts_stamp > TCP_PAWS_MSL &&
 			     tm->tcpm_ts_stamp <= (u32)tp->rx_opt.ts_recent_stamp)) {
