@@ -127,6 +127,7 @@ int sysctl_tcp_early_retrans __read_mostly = 3;
 /* Adapt the MSS value used to make delayed ack decision to the
  * real world.
  */
+/* 计算出receive mss，即the maximum length ot the TCP segment so far received. */
 static void tcp_measure_rcv_mss(struct sock *sk, const struct sk_buff *skb)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
@@ -139,6 +140,7 @@ static void tcp_measure_rcv_mss(struct sock *sk, const struct sk_buff *skb)
 	 * sends good full-sized frames.
 	 */
 	len = skb_shinfo(skb)->gso_size ? : skb->len;
+    /* 如果len更大，则更新rcv_mss */
 	if (len >= icsk->icsk_ack.rcv_mss) {
 		icsk->icsk_ack.rcv_mss = len;
 	} else {
@@ -149,6 +151,7 @@ static void tcp_measure_rcv_mss(struct sock *sk, const struct sk_buff *skb)
 		 */
 		len += skb->data - skb_transport_header(skb);
 		if (len >= TCP_MSS_DEFAULT + sizeof(struct tcphdr) ||
+            /* NOTE: 从下面一句话, 可以看出对于数据包，如果它不是full sized，则应该打上PUSH标记 */
 		    /* If PSH is not set, packet should be
 		     * full sized, provided peer TCP is not badly broken.
 		     * This observation (if it is correct 8)) allows
@@ -323,6 +326,7 @@ static int __tcp_grow_window(const struct sock *sk, const struct sk_buff *skb)
 	return 0;
 }
 
+/* Linux中实现了接收窗口的慢启动机制 */
 static void tcp_grow_window(struct sock *sk, const struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -589,6 +593,11 @@ new_measure:
  * he can only send snd_cwnd unacked packets at any given time.  For
  * each ACK we send, he increments snd_cwnd and transmits more of his
  * queue.  -DaveM
+ */
+/* 收到按序到达的数据后，执行一下操作：
+ *      a. 调度一个ACK。 TCP协议嘛，不回ACK就不乖了
+ *      b. 测量receive mss
+ *      c. 计算出一个新的receive window告知对端
  */
 static void tcp_event_data_recv(struct sock *sk, struct sk_buff *skb)
 {
@@ -3491,16 +3500,16 @@ static inline bool tcp_may_raise_cwnd(const struct sock *sk, const int flag)
  * The function assumes that snd_una<=ack<=snd_next.
  */
 /* 判断确认号ack是否更新发送窗口 */
-/* TODO: 这里的window update，到底是发送窗口更新，还是接收窗口更新？ */
+/* TODO-DONE: 这里的window update，到底是发送窗口更新，还是接收窗口更新？
+ * 更新发送窗口！！！ */
 static inline bool tcp_may_update_window(const struct tcp_sock *tp,
 					const u32 ack, const u32 ack_seq,
 					const u32 nwin)
 {
 	return	after(ack, tp->snd_una) ||      /* 如果ack大于snd_una，则有新数据被确认了，显然会更新发送窗口 */
-        /* 如果接收包的序号大于上一次更新发送窗口时记录的序号，则更新发送窗口 */
-        /* TODO： ack_seq在增大，说明对端在往本地发数据，为什么要更新发送窗口？ */
+        /* 如果接收包的确认序号大于上一次更新发送窗口时记录的序号，则更新发送窗口 */
 		after(ack_seq, tp->snd_wl1) ||      
-        /* 如果对端没有往本地发数据，但是接收包中的receive window值变大了，则需要更新发送窗口 */
+        /* 如果本地没有往对端发数据，但是接收包中的receive window值变大了，则需要更新发送窗口 */
 		(ack_seq == tp->snd_wl1 && nwin > tp->snd_wnd);
 }
 
@@ -3533,7 +3542,7 @@ static int tcp_ack_update_window(struct sock *sk, const struct sk_buff *skb, u32
 			 */
             /* 首部预测标志与接收窗口大小有关，因此需要重新计算 */
 			tp->pred_flags = 0;
-            /* 检查是否能使用首部预测，如果可以则重新计算首部预测标志 */
+            /* 检查是否能进入fast path,如果可以则计算pred_flags */
 			tcp_fast_path_check(sk);
 
 			if (nwin > tp->max_window) {
@@ -3571,14 +3580,19 @@ static void tcp_send_challenge_ack(struct sock *sk)
 	}
 }
 
+/* 更新rx_opt.ts_recent，并记录更新时间 */
 static void tcp_store_ts_recent(struct tcp_sock *tp)
 {
 	tp->rx_opt.ts_recent = tp->rx_opt.rcv_tsval;
 	tp->rx_opt.ts_recent_stamp = get_seconds();
 }
 
+/* 更新ts_recent */
 static void tcp_replace_ts_recent(struct tcp_sock *tp, u32 seq)
 {
+    /* 只有开启了timestamp选项 并且seq <= tp->rcv_wup时才会更新
+     * 如果数据都是按序到达的，则seq == tp->rcv_wup
+     * 但如果发生乱序，乱序包收到的时候不会更新ts_recent，知道按序包收到时才会更新ts_recent ！ */
 	if (tp->rx_opt.saw_tstamp && !after(seq, tp->rcv_wup)) {
 		/* PAWS bug workaround wrt. ACK frames, the PAWS discard
 		 * extra check below makes sure this can only happen
@@ -4105,13 +4119,21 @@ EXPORT_SYMBOL(tcp_parse_md5sig_option);
  * up to bandwidth of 18Gigabit/sec. 8) ]
  */
 
+/* 判断是否是乱序的ACK， 如果是乱序则返回true */
+/* 如果判定为乱序的ACK，则通过PAWS检查，不会丢弃该数据包 */
+/* 该函数的引入目的：
+ *      在快速重传机制被触发后，会连续触发大量的dupack。
+ *      如果这些dupack之间发生乱序，在没有该函数判断情况下，就会被discard掉。
+ *      从而影响快速重传阶段能收到的dupack数量
+ */
 static int tcp_disordered_ack(const struct sock *sk, const struct sk_buff *skb)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	const struct tcphdr *th = tcp_hdr(skb);
-	u32 seq = TCP_SKB_CB(skb)->seq;
-	u32 ack = TCP_SKB_CB(skb)->ack_seq;
+	u32 seq = TCP_SKB_CB(skb)->seq;     /* skb数据包的起始seq */
+	u32 ack = TCP_SKB_CB(skb)->ack_seq; /* skb数据包所确认的序号 */
 
+    /* 如果同时满足以下注释的四个条件，则判定为乱序ACK */
 	return (/* 1. Pure ACK with correct sequence number. */
 		(th->ack && seq == TCP_SKB_CB(skb)->end_seq && seq == tp->rcv_nxt) &&
 
@@ -4125,6 +4147,7 @@ static int tcp_disordered_ack(const struct sock *sk, const struct sk_buff *skb)
 		(s32)(tp->rx_opt.ts_recent - tp->rx_opt.rcv_tsval) <= (inet_csk(sk)->icsk_rto * 1024) / HZ);
 }
 
+/* PAWS检查，如需丢弃则返回true */
 static inline bool tcp_paws_discard(const struct sock *sk,
 				   const struct sk_buff *skb)
 {
@@ -4147,13 +4170,20 @@ static inline bool tcp_paws_discard(const struct sock *sk,
  * (borrowed from freebsd)
  */
 
+/* 根据序号，检查合法性。 */
+/* 从判断条件可以看出，如果一个数据包的起始序号在[rcv_nxt, rcv_nxt + rcv_wnd]区间，
+ * 但end_seq > rcv_nxt + rcv_wnd也是合法的。
+ */
 static inline bool tcp_sequence(const struct tcp_sock *tp, u32 seq, u32 end_seq)
 {
+    /* 如果skb尾序号 < rcv_wup,则该数据包太老了，非法，返回false */
 	return	!before(end_seq, tp->rcv_wup) &&
+        /* 如果skb起始序号 > rcv_nxt + rcv_wnd，则该序号太新了，非法，返回false */
 		!after(seq, tp->rcv_nxt + tcp_receive_window(tp));
 }
 
 /* When we get a reset we do this. */
+/* 一条TCP被reset后，会根据状态返回不同的错误信息 */
 void tcp_reset(struct sock *sk)
 {
 	/* We want the right error as BSD sees it (and indeed as we do). */
@@ -5520,12 +5550,14 @@ out:
 /* Does PAWS and seqno based validation of an incoming segment, flags will
  * play significant role here.
  */
+/* 检查接收数据包的合法性, 包括PAWS、seqno、reset flag等 */
 static bool tcp_validate_incoming(struct sock *sk, struct sk_buff *skb,
 				  const struct tcphdr *th, int syn_inerr)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	/* RFC1323: H1. Apply PAWS check first. */
+    /* 如果开启了timestamp选项，则进行基于timestamp的PAWS检查 */
 	if (tcp_fast_parse_options(skb, th, tp) && tp->rx_opt.saw_tstamp &&
 	    tcp_paws_discard(sk, skb)) {
 		if (!th->rst) {
@@ -5534,16 +5566,19 @@ static bool tcp_validate_incoming(struct sock *sk, struct sk_buff *skb,
 			goto discard;
 		}
 		/* Reset is accepted even if it did not pass PAWS. */
+        /* TODO: 这样不会导致reset伪造成功的概率更高么 ? */
 	}
 
 	/* Step 1: check sequence number */
 	if (!tcp_sequence(tp, TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq)) {
 		/* RFC793, page 37: "In all states except SYN-SENT, all reset
 		 * (RST) segments are validated by checking their SEQ-fields."
+		 * 从上面这句话也可以看出reset数据包的合法性检查真的是太简单了 !
 		 * And page 69: "If an incoming segment is not acceptable,
 		 * an acknowledgment should be sent in reply (unless the RST
 		 * bit is set, if so drop the segment and return)".
 		 */
+        /* 见上面一段英文解释 */
 		if (!th->rst) {
 			if (th->syn)
 				goto syn_challenge;
@@ -5563,6 +5598,9 @@ static bool tcp_validate_incoming(struct sock *sk, struct sk_buff *skb,
 		if (TCP_SKB_CB(skb)->seq == tp->rcv_nxt)
 			tcp_reset(sk);
 		else
+            /* 如果reset包的序号不吻合，则发送一个ACK给对端。
+             * 如果对端真的想reset这个数据包的话，会回复一个序号正确的reset
+             * 如果对端没有再发送reset给本端，则一切能恢复正常。就像没收到过这个序号不对的reset包一样。 */
 			tcp_send_challenge_ack(sk);
 		goto discard;
 	}
@@ -5573,6 +5611,7 @@ static bool tcp_validate_incoming(struct sock *sk, struct sk_buff *skb,
 	 * RFC 5691 4.2 : Send a challenge ack
 	 */
 	if (th->syn) {
+    /* 遇到重传的SYN/ACK时，就会触发该机制 */
 syn_challenge:
 		if (syn_inerr)
 			TCP_INC_STATS_BH(sock_net(sk), TCP_MIB_INERRS);
@@ -5621,6 +5660,14 @@ discard:
  *	the rest is checked inline. Fast processing is turned on in
  *	tcp_data_queue when everything is OK.
  */
+/* Linux中两种机制处理收到的TCP包： fast path 和 slow path
+ *      a. fast path: 由于没有发生任何异常，一切都从简处理，加快处理速度
+ *          1. 处理收到到的数据
+ *          2. 发送ACK或新数据
+ *          3. 存储timestamp
+ *      b. slow path: 出现异常情况后，一切从严判断。异常情况包括：zero window、乱序、内存空间问题、意外的TCP选项
+ * 在Linux中，选择哪一种机制是由一个四字节的prediction flag来快速判断的。
+ */
 int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 			const struct tcphdr *th, unsigned int len)
 {
@@ -5656,7 +5703,7 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
     /* TODO-DONE: pred_flag含义？ tcp_flag_word()含义？ */
     /* tcp_flag_word()是直接提取出TCP头部中的header len + reserved + flag + rwnd 这四个字节，
      * pred_flag是之前这四个字节的缓存 */ 
-    /* 如果满足这个调节，说明完全没有异常发生，就直接可以处理该数据包了 */
+    /* 如果满足这个条件，说明没有异常发生，就直接可以处理该数据包了 */
 	if ((tcp_flag_word(th) & TCP_HP_BITS) == tp->pred_flags &&
 	    TCP_SKB_CB(skb)->seq == tp->rcv_nxt &&                  /* skb的序号刚好就是期望收到的序号 */
 	    !after(TCP_SKB_CB(skb)->ack_seq, tp->snd_nxt)) {        /* skb的尾序号不超过snd_nxt，算是合法性检测 */
@@ -5808,6 +5855,8 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 				/* Well, only one small jumplet in fast path... */
 				tcp_ack(sk, skb, FLAG_DATA);
 				tcp_data_snd_check(sk);
+                /* 如果在tcp_data_snd_check()中有数据发送出去，那么就不会有ack等待被schedule，可以直接跳到no_ack
+                 * 如果没有发送数据，则要主动调用_tcp_ack_snd_check()来尝试发送ACK */
 				if (!inet_csk_ack_scheduled(sk))
 					goto no_ack;
 			}

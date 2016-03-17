@@ -643,6 +643,7 @@ static inline void tcp_fast_path_check(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
+    /* 没有发生乱序、对端接收窗口非零、本地接收缓存未超过上限、并且没有urgent data，则可以进入fast path */
 	if (skb_queue_empty(&tp->out_of_order_queue) &&
 	    tp->rcv_wnd &&
 	    atomic_read(&sk->sk_rmem_alloc) < sk->sk_rcvbuf &&
@@ -1195,6 +1196,7 @@ static inline int tcp_fin_time(const struct sock *sk)
 /* 基于timestamp的PAWS基本检测, 合法则返回true
  * 检测的逻辑内在逻辑：
  * 如果是按序发送的数据，后发送的timestamp值必须更大 */
+/* 从tx_opt结构体来看，该函数使用的timestamp是针对某一条具体流的，而不是per-host的 */
 static inline bool tcp_paws_check(const struct tcp_options_received *rx_opt,
 				  int paws_win)
 {
@@ -1204,7 +1206,7 @@ static inline bool tcp_paws_check(const struct tcp_options_received *rx_opt,
 	if ((s32)(rx_opt->ts_recent - rx_opt->rcv_tsval) <= paws_win)
 		return true;
 
-    /* 如果tc_recent_stamp太过时了，说句已经不可信了，只好放弃PAWS检查，即默认通过检查 */
+    /* 如果tc_recent_stamp太过时了，说明已经不可信了，只好放弃PAWS检查，即默认通过检查 */
 	if (unlikely(get_seconds() >= rx_opt->ts_recent_stamp + TCP_PAWS_24DAYS))
 		return true;
 	/*

@@ -150,6 +150,7 @@ struct tcp_sock {
  */
  	u32	rcv_nxt;	/* What we want to receive next 	*/
 	u32	copied_seq;	/* Head of yet unread data		*/
+    /* rcv_wup会在本端发送一个ACK时，与tp->rcv_nxt进行同步，具体可查看tcp_select_window() */
 	u32	rcv_wup;	/* rcv_nxt on last window update sent	*/
  	u32	snd_nxt;	/* Next sequence we send		*/
 

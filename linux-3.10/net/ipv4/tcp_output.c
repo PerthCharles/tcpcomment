@@ -293,7 +293,7 @@ static u16 tcp_select_window(struct sock *sk)
 		new_win = ALIGN(cur_win, 1 << tp->rx_opt.rcv_wscale);
 	}
 	tp->rcv_wnd = new_win;
-	tp->rcv_wup = tp->rcv_nxt;
+	tp->rcv_wup = tp->rcv_nxt;      /* see, rcv_wup此时与rcv_nxt进行同步 */
 
 	/* Make sure we do not exceed the maximum possible
 	 * scaled window.
