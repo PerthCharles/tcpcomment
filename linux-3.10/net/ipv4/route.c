@@ -1556,6 +1556,7 @@ out:
 	return err;
 }
 
+/* 创建一个dst_entry cache */
 static int ip_mkroute_input(struct sk_buff *skb,
 			    struct fib_result *res,
 			    const struct flowi4 *fl4,
@@ -1581,7 +1582,12 @@ static int ip_mkroute_input(struct sk_buff *skb,
  *	2. IP spoofing attempts are filtered with 100% of guarantee.
  *	called with rcu_read_lock()
  */
-
+/* 该函数功能:
+ *      Main routing routine for incoming packets when entry not in
+ *      route cache hashtable. Get appropriate dst_entry struct
+ *      from "slow" routing tables, assign it to skb->dst and add it
+ *      to the route cache hashtable
+ */
 static int ip_route_input_slow(struct sk_buff *skb, __be32 daddr, __be32 saddr,
 			       u8 tos, struct net_device *dev)
 {
@@ -1799,6 +1805,7 @@ int ip_route_input_noref(struct sk_buff *skb, __be32 daddr, __be32 saddr,
 		rcu_read_unlock();
 		return -EINVAL;
 	}
+    /* 慢慢去找 */
 	res = ip_route_input_slow(skb, daddr, saddr, tos, dev);
 	rcu_read_unlock();
 	return res;

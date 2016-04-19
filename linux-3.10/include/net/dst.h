@@ -450,6 +450,12 @@ static inline int dst_output(struct sk_buff *skb)
 }
 
 /* Input packet from network to transport.  */
+/* 将数据包从ip层，传递给传输层处理
+ * 根据dst_entry来确定具体的input()函数
+ * 常见的input函数有：
+ *      ip_forward()
+ *      ip_local_deliver()
+ */
 static inline int dst_input(struct sk_buff *skb)
 {
 	return skb_dst(skb)->input(skb);

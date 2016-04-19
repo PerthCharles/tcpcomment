@@ -49,9 +49,11 @@ static int ip_forward_finish(struct sk_buff *skb)
 	if (unlikely(opt->optlen))
 		ip_forward_options(skb);
 
+    /* 将skb forward出去 */
 	return dst_output(skb);
 }
 
+/* 对于non-local route, dst-input()会实例化为ip_forward() */
 int ip_forward(struct sk_buff *skb)
 {
 	struct iphdr *iph;	/* Our header */

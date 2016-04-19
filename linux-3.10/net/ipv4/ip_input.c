@@ -186,6 +186,7 @@ bool ip_call_ra_chain(struct sk_buff *skb)
 	return false;
 }
 
+/* 找到level-4的协议，并调用相应的处理函数 */
 static int ip_local_deliver_finish(struct sk_buff *skb)
 {
 	struct net *net = dev_net(skb->dev);
@@ -202,8 +203,10 @@ static int ip_local_deliver_finish(struct sk_buff *skb)
 		int raw;
 
 	resubmit:
+        /* 首先尝试给raw socket ? */
 		raw = raw_local_deliver(skb, protocol);
 
+        /* 确定四层网络协议对应结构体 */
 		ipprot = rcu_dereference(inet_protos[protocol]);
 		if (ipprot != NULL) {
 			int ret;
@@ -216,9 +219,15 @@ static int ip_local_deliver_finish(struct sk_buff *skb)
 				nf_reset(skb);
 			}
             /* 调用传输层的处理函数，如tcp_v4_rcv() */
+            /* TODO-DONE：如果raw socket处理过该skb了，还是会
+             * 正常交给上层协议处理吗？应该有什么地方保证
+             * 了不会重复处理的，暂时还没找到。 */
+            /* 目前能找到的一个就是如果raw socket没有模拟正常的四层协议，则ipprot就会为空，从而不会重复处理 */
+            /* 反复查看，并查阅资料后发现，raw socket确实会导致数据包再次发送到正常流程中，所以如果用raw socket模拟一个TCP连接，应该会够呛。 */
 			ret = ipprot->handler(skb);
 			if (ret < 0) {
 				protocol = -ret;
+                /* 这里存在一个resubmit的 */
 				goto resubmit;
 			}
 			IP_INC_STATS_BH(net, IPSTATS_MIB_INDELIVERS);
@@ -226,6 +235,7 @@ static int ip_local_deliver_finish(struct sk_buff *skb)
 			if (!raw) {
 				if (xfrm4_policy_check(NULL, XFRM_POLICY_IN, skb)) {
 					IP_INC_STATS_BH(net, IPSTATS_MIB_INUNKNOWNPROTOS);
+                    /* 发送一个dest unreach的icmp包 */
 					icmp_send(skb, ICMP_DEST_UNREACH,
 						  ICMP_PROT_UNREACH, 0);
 				}
@@ -252,6 +262,7 @@ int ip_local_deliver(struct sk_buff *skb)
 	 */
 
 	if (ip_is_fragment(ip_hdr(skb))) {
+        /* 如果是分片，则处理IP分片 */
 		if (ip_defrag(skb, IP_DEFRAG_LOCAL_DELIVER))
 			return 0;
 	}
@@ -334,6 +345,7 @@ static int ip_rcv_finish(struct sk_buff *skb)
 	 *	how the packet travels inside Linux networking.
 	 */
 	if (!skb_dst(skb)) {
+        /* 如果skb没有还没能初始化dst_entry, 则慢慢找一找，并初始化好对应的dst->input()等等 */
 		int err = ip_route_input_noref(skb, iph->daddr, iph->saddr,
 					       iph->tos, skb->dev);
 		if (unlikely(err)) {
@@ -376,6 +388,7 @@ drop:
 /*
  * 	Main IP Receive routine.
  */
+/* IP层的接收入口处理函数, 一般在deliver_skb()中调用 */
 int ip_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, struct net_device *orig_dev)
 {
 	const struct iphdr *iph;
@@ -444,6 +457,8 @@ int ip_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, 
 	/* Must drop socket now because of tproxy. */
 	skb_orphan(skb);
 
+    /* 交给ip_rcv_finish()接着处理，至于为什么携程这个样子，是由于netfilter机制
+     * 这次分析核心流程时赞忽略netfilter */
 	return NF_HOOK(NFPROTO_IPV4, NF_INET_PRE_ROUTING, skb, dev, NULL,
 		       ip_rcv_finish);
 

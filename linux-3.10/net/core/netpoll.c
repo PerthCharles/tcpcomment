@@ -759,6 +759,7 @@ static bool pkt_is_ns(struct sk_buff *skb)
 	return true;
 }
 
+/* TODO： 处理流程分析到np->rx_hook()好像就断了，grep都找不到rx_hook()的实例化，后续再看吧 */
 int __netpoll_rx(struct sk_buff *skb, struct netpoll_info *npinfo)
 {
 	int proto, len, ulen;

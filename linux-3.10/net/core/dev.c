@@ -1676,6 +1676,7 @@ int dev_forward_skb(struct net_device *dev, struct sk_buff *skb)
 }
 EXPORT_SYMBOL_GPL(dev_forward_skb);
 
+/* deliver_skb()是驱动层交给IP层的关键接口函数 */
 static inline int deliver_skb(struct sk_buff *skb,
 			      struct packet_type *pt_prev,
 			      struct net_device *orig_dev)
@@ -1683,6 +1684,9 @@ static inline int deliver_skb(struct sk_buff *skb,
 	if (unlikely(skb_orphan_frags(skb, GFP_ATOMIC)))
 		return -ENOMEM;
 	atomic_inc(&skb->users);
+    /* 根据link layer的包类型，调用相应的处理函数来处理该skb
+     * 比如ETH_P_IP类型的数据包，对应的处理函数是ip_rcv()
+     * ETH_P_ARP类型的处理函数是arp_rcv() */
 	return pt_prev->func(skb, skb->dev, pt_prev, orig_dev);
 }
 
@@ -3158,7 +3162,7 @@ enqueue:
  *	NET_RX_DROP     (packet was dropped)
  *
  */
-
+/* 从网卡驱动中取出一个数据包，放入per-cpu backlog queue */
 int netif_rx(struct sk_buff *skb)
 {
 	int ret;
@@ -3411,6 +3415,7 @@ static bool skb_pfmemalloc_protocol(struct sk_buff *skb)
 	}
 }
 
+/* 处理接收到的skb的核心处理函数 */
 static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
 {
 	struct packet_type *ptype, *pt_prev;
@@ -3424,10 +3429,12 @@ static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
 	net_timestamp_check(!netdev_tstamp_prequeue, skb);
 
     /* 额，这个有ftrace可以追踪哪个网卡收的skb么
-     * TODO: 确认一下 */
+     * TODO-DONE: 确认一下
+     * 应该是可以跟踪到是哪个网卡收的skb的 */
 	trace_netif_receive_skb(skb);
 
 	/* if we've gotten here through NAPI, check netpoll */
+    /* NAPI的处理函数 */
 	if (netpoll_receive_skb(skb))
 		goto out;
 
@@ -3468,6 +3475,7 @@ another_round:
 	list_for_each_entry_rcu(ptype, &ptype_all, list) {
 		if (!ptype->dev || ptype->dev == skb->dev) {
 			if (pt_prev)
+                /* deliver_skb()是驱动层交给IP层的关键接口函数 */
 				ret = deliver_skb(skb, pt_prev, orig_dev);
 			pt_prev = ptype;
 		}
@@ -4027,9 +4035,10 @@ static int process_backlog(struct napi_struct *napi, int quota)
 		struct sk_buff *skb;
 		unsigned int qlen;
 
+        /* 一次处理backlob queue中的skb */
 		while ((skb = __skb_dequeue(&sd->process_queue))) {
 			local_irq_enable();
-			__netif_receive_skb(skb);
+			__netif_receive_skb(skb);   /* 实际处理一个收到的skb */
 			local_irq_disable();
 			input_queue_head_incr(sd);
 			if (++work >= quota) {
@@ -4149,7 +4158,8 @@ void netif_napi_del(struct napi_struct *napi)
 }
 EXPORT_SYMBOL(netif_napi_del);
 
-/* 处理net soft IRQ */
+/* 处理net soft IRQ, 该函数会在raise 一个NET_RX_SOFTIRQ时被调用
+ * 主要是调用 n->poll(), 即process_backlog()来处理skb */
 static void net_rx_action(struct softirq_action *h)
 {
 	struct softnet_data *sd = &__get_cpu_var(softnet_data);
@@ -4191,7 +4201,7 @@ static void net_rx_action(struct softirq_action *h)
 		 */
 		work = 0;
 		if (test_bit(NAPI_STATE_SCHED, &n->state)) {
-			work = n->poll(n, weight);
+			work = n->poll(n, weight);      /* 调用process_backlog() 处理per-cpu backlog queue中的skb */
 			trace_napi_poll(n);
 		}
 
@@ -6306,7 +6316,8 @@ static int __init net_dev_init(void)
 		sd->cpu = i;
 #endif
 
-		sd->backlog.poll = process_backlog;
+        /* 将process_backlog()注册为处理per-cpu backlog queue中的poll处理函数 */
+		sd->backlog.poll = process_backlog;     
 		sd->backlog.weight = weight_p;
 		sd->backlog.gro_list = NULL;
 		sd->backlog.gro_count = 0;

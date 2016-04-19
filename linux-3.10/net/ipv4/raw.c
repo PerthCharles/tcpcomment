@@ -155,6 +155,7 @@ static int icmp_filter(const struct sock *sk, const struct sk_buff *skb)
  * RFC 1122: SHOULD pass TOS value up to the transport layer.
  * -> It does. And not only TOS, but all IP header.
  */
+/* 调用raw socket进行处理 */
 static int raw_v4_input(struct sk_buff *skb, const struct iphdr *iph, int hash)
 {
 	struct sock *sk;
@@ -168,6 +169,7 @@ static int raw_v4_input(struct sk_buff *skb, const struct iphdr *iph, int hash)
 		goto out;
 
 	net = dev_net(skb->dev);
+    /* 查找对应的raw socket */
 	sk = __raw_v4_lookup(net, __sk_head(head), iph->protocol,
 			     iph->saddr, iph->daddr,
 			     skb->dev->ifindex);
@@ -181,6 +183,7 @@ static int raw_v4_input(struct sk_buff *skb, const struct iphdr *iph, int hash)
 			if (clone)
 				raw_rcv(sk, clone);
 		}
+        /* 看这意思，多个raw socket是可以收到同一个数据包 */
 		sk = __raw_v4_lookup(net, sk_next(sk), iph->protocol,
 				     iph->saddr, iph->daddr,
 				     skb->dev->ifindex);
@@ -190,6 +193,9 @@ out:
 	return delivered;
 }
 
+/* 检查raw socket hashtable中是否有对应的raw socket注册
+ * 如果有，则调用raw_v4_input()
+ */
 int raw_local_deliver(struct sk_buff *skb, int protocol)
 {
 	int hash;
@@ -306,6 +312,7 @@ static int raw_rcv_skb(struct sock *sk, struct sk_buff *skb)
 	return NET_RX_SUCCESS;
 }
 
+/* raw socket处理收到的一个skb */
 int raw_rcv(struct sock *sk, struct sk_buff *skb)
 {
 	if (!xfrm4_policy_check(sk, XFRM_POLICY_IN, skb)) {
